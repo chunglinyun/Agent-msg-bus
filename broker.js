@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // claude-msg broker: 極簡訊息匯流排 (NDJSON over localhost TCP)
-// 每個 session 用名字 (work / personal) 收發訊息。
+// 每個 session 用任意名字收發訊息（join 防撞名、who 看成員、@all 廣播）。
 // recv 支援 blocking wait：queue 空時 hold 住連線，直到有訊息或逾時。
 //
 // 用法： node broker.js
-// 環境變數： CLAUDE_MSG_PORT (預設 8787)
+// 環境變數： CLAUDE_MSG_PORT (預設 8787)、CLAUDE_MSG_STALE_MS (成員存活 TTL，預設 10 分鐘)
 
 const net = require('net');
 
@@ -13,6 +13,11 @@ const PORT = process.env.CLAUDE_MSG_PORT ? Number(process.env.CLAUDE_MSG_PORT) :
 
 const queues = new Map();  // name -> [msg, ...]
 const waiters = new Map(); // name -> [{ socket, timer }, ...]
+const roster = new Map();  // name -> lastSeen (ms)。ponytail: 不做 leave/prune，讀取時用 alive() 過濾即可
+const STALE_MS = Number(process.env.CLAUDE_MSG_STALE_MS || 10 * 60 * 1000);
+
+function touch(name) { if (name && name !== '?') roster.set(name, Date.now()); }
+function alive(name) { return (Date.now() - (roster.get(name) || 0)) < STALE_MS; }
 
 function getQueue(name) {
   if (!queues.has(name)) queues.set(name, []);
@@ -47,15 +52,49 @@ function handle(req, socket) {
 
   if (cmd === 'send') {
     if (!req.to) return respond(socket, { ok: false, error: 'missing "to"' });
+    touch(req.from);
+    if (req.to === 'all') {
+      // 廣播：送給 roster 中還活著的所有成員（不含自己）。stale 成員不收，不塞死人 queue。
+      const targets = [...roster.keys()].filter((n) => alive(n) && n !== req.from);
+      for (const n of targets) {
+        const msg = { from: req.from || '?', to: 'all', text: req.text ?? '', ts: Date.now() };
+        if (!deliverToWaiter(n, msg)) getQueue(n).push(msg);
+      }
+      log(`send  ${req.from} -> @all (${targets.length})`);
+      return respond(socket, { ok: true, delivered: targets.length });
+    }
     const msg = { from: req.from || '?', to: req.to, text: req.text ?? '', ts: Date.now() };
     if (!deliverToWaiter(req.to, msg)) getQueue(req.to).push(msg);
     log(`send  ${msg.from} -> ${msg.to}: ${msg.text}`);
+    // 對方不在線就提示（可能是打錯名字），訊息仍入列
+    if (!alive(req.to)) return respond(socket, { ok: true, hint: `"${req.to}" 未上線，訊息已入列` });
     return respond(socket, { ok: true });
+  }
+
+  if (cmd === 'join') {
+    const name = req.name;
+    if (!name || name === 'all' || name.startsWith('@'))
+      return respond(socket, { ok: false, error: '名字不可為空、"all" 或以 @ 開頭' });
+    if (alive(name)) return respond(socket, { ok: false, error: `"${name}" 已被使用` });
+    touch(name);
+    log(`join  ${name}`);
+    return respond(socket, { ok: true, name });
+  }
+
+  if (cmd === 'who') {
+    const peers = [...roster.entries()].filter(([n]) => alive(n))
+      .map(([name, ts]) => ({
+        name, lastSeen: ts,
+        waiting: !!(waiters.get(name) || []).length, // 正在阻塞 recv = 現在就在線
+        queued: getQueue(name).length,
+      }));
+    return respond(socket, { ok: true, peers });
   }
 
   if (cmd === 'recv') {
     const name = req.name;
     if (!name) return respond(socket, { ok: false, error: 'missing "name"' });
+    touch(name);
     const q = getQueue(name);
     if (q.length) {
       const messages = q.splice(0, q.length);
