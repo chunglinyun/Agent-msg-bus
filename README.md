@@ -113,3 +113,7 @@ launcher 會注入 `CLAUDE_MSG_NAME`（work / personal），所以這兩個實�
 - **改了程式沒生效**：執行時用的是複本，不是這個 repo——重跑 `Install-MsgBus`（skill 複本）
   或 `Install-ClaudeSplit`（bin 複本）。
 - **split 第一次跑某 profile 會另外下載 claude.exe**：home 被改了，預期行為。
+
+## License
+
+MIT，見 [LICENSE](LICENSE)。
