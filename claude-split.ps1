@@ -50,6 +50,7 @@ function Start-ClaudeBroker {
     param([int]$Port = $Global:ClaudeMsgPort)
     $broker = Join-Path $Global:ClaudeSplitBin "broker.js"
     if (-not (Test-Path $broker)) { Write-Error "找不到 broker.js：$broker（先跑 Install-ClaudeSplit）"; return }
+    if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { Write-Host "broker 已在跑（port $Port），不重複啟動。" -ForegroundColor Yellow; return }
     $env:CLAUDE_MSG_PORT = "$Port"
     Write-Host "啟動 broker（port $Port）…關掉那個視窗即停止。" -ForegroundColor Green
     Start-Process -FilePath "node" -ArgumentList @("`"$broker`"") -WindowStyle Normal
@@ -58,8 +59,33 @@ function Start-ClaudeBroker {
 # --- PowerShell 用的 msg 捷徑 ---------------------------------------
 # PowerShell 的 function 優先權高於外部程式，能穩定蓋掉系統的 msg.exe。
 # （agent 的 bash 不吃這個 function，改用下面注入的 $CLAUDE_MSG 環境變數。）
+# tab 補全：第一格補子指令＋在線成員（msg raja<TAB> 直接送訊），第二格補成員名。
+# 注意 @名字 在 PowerShell 是 splatting，tab 會補到變數；請用裸名字。
+function Get-ClaudeMsgPeers {
+    try {
+        node (Join-Path $Global:ClaudeSplitBin "msg.js") who 2>$null |
+            ForEach-Object { ($_ -split '\s+')[0] } |
+            Where-Object { $_ -and $_ -notmatch '^\(' }
+    } catch {}
+}
 function msg {
-    node (Join-Path $Global:ClaudeSplitBin "msg.js") @args
+    param(
+        [Parameter(ValueFromRemainingArguments=$true)]
+        [ArgumentCompleter({
+            param($cmdName, $paramName, $word, $ast, $bound)
+            $elems = $ast.CommandElements
+            # 正在補第幾格：word 非空時它自己就是最後一個 element
+            $pos = if ($word) { $elems.Count - 1 } else { $elems.Count }
+            $cands = if ($pos -le 1) {
+                @('send','recv','join','who','up','ping','whoami') + (Get-ClaudeMsgPeers)
+            } elseif ($pos -eq 2 -and $elems[1].Extent.Text -eq 'send') {
+                @('all') + (Get-ClaudeMsgPeers)
+            } else { @() }
+            $cands | Where-Object { $_ -like "$word*" }
+        })]
+        $MsgArgs
+    )
+    node (Join-Path $Global:ClaudeSplitBin "msg.js") @MsgArgs
 }
 
 # --- 核心 launcher：偽造 home + 設定身分 + 注入路徑 ------------------

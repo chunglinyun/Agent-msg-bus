@@ -4,12 +4,31 @@
 // recv 支援 blocking wait：queue 空時 hold 住連線，直到有訊息或逾時。
 //
 // 用法： node broker.js
+//   前景跑（Start-ClaudeBroker）＝ chat 模式：視窗即人類聊天視窗，輸入「成員 訊息」送訊。
+//   背景跑（msg up）＝ 純 broker，人類用 msg send/recv。
 // 環境變數： CLAUDE_MSG_PORT (預設 8787)、CLAUDE_MSG_STALE_MS (成員存活 TTL，預設 10 分鐘)
 
 const net = require('net');
+const readline = require('readline');
 
 const HOST = '127.0.0.1'; // 只綁 loopback，外部連不進來
 const PORT = process.env.CLAUDE_MSG_PORT ? Number(process.env.CLAUDE_MSG_PORT) : 8787;
+
+// chat 模式：前景跑（stdin 是 TTY）時，broker 視窗兼作人類的聊天視窗。
+// 給 user 的訊息直接顯示、不入列；直接輸入「成員 訊息」即可送出。
+// msg up 背景跑（stdio ignore）時自動關閉，行為與舊版相同。
+const HUMAN = 'user';
+const chatMode = !!process.stdin.isTTY;
+let rl = null;
+
+// 每個名字固定一個顏色（hash 決定），方向一律 from → to
+const PALETTE = [36, 33, 35, 32, 34, 91, 96, 95];
+function cname(name) {
+  if (name === HUMAN) return '\x1b[1;97m你\x1b[0m';
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return `\x1b[${PALETTE[h % PALETTE.length]}m${name}\x1b[0m`;
+}
 
 const queues = new Map();  // name -> [msg, ...]
 const waiters = new Map(); // name -> [{ socket, timer }, ...]
@@ -44,7 +63,28 @@ function deliverToWaiter(name, msg) {
 }
 
 function log(s) {
-  console.log(`[${new Date().toISOString()}] ${s}`);
+  const line = `[${new Date().toLocaleTimeString('en-GB')}] ${s}`;
+  if (rl) {
+    // 正在打字時先清掉輸入列，印完再還原（prompt(true) 保留已輸入的字）
+    readline.cursorTo(process.stdout, 0);
+    readline.clearLine(process.stdout, 0);
+    console.log(line);
+    rl.prompt(true);
+  } else console.log(line);
+}
+
+// 送達順序：有 waiter 直接給 → 給 user 且 chat 模式就靠 log 顯示（不入列）→ 其餘入列
+function deliverOrQueue(name, msg) {
+  if (deliverToWaiter(name, msg)) return;
+  if (name === HUMAN && chatMode) return;
+  getQueue(name).push(msg);
+}
+
+function logMsg(msg, extra = '') {
+  const arrow = msg.to === 'all' ? `${cname(msg.from)} ⇒ @all` : `${cname(msg.from)} → ${cname(msg.to)}`;
+  // 給人類看的訊息加 ★ 並把內文亮白，掃一眼就找得到
+  const text = msg.to === HUMAN || msg.to === 'all' ? `\x1b[97m${msg.text}\x1b[0m` : msg.text;
+  log(`${msg.to === HUMAN ? '\x1b[1;93m★\x1b[0m ' : ''}${arrow}: ${text}${extra}`);
 }
 
 function handle(req, socket) {
@@ -56,16 +96,14 @@ function handle(req, socket) {
     if (req.to === 'all') {
       // 廣播：送給 roster 中還活著的所有成員（不含自己）。stale 成員不收，不塞死人 queue。
       const targets = [...roster.keys()].filter((n) => alive(n) && n !== req.from);
-      for (const n of targets) {
-        const msg = { from: req.from || '?', to: 'all', text: req.text ?? '', ts: Date.now() };
-        if (!deliverToWaiter(n, msg)) getQueue(n).push(msg);
-      }
-      log(`send  ${req.from} -> @all (${targets.length})`);
+      const msg = { from: req.from || '?', to: 'all', text: req.text ?? '', ts: Date.now() };
+      for (const n of targets) deliverOrQueue(n, msg);
+      logMsg(msg, `（${targets.length} 人）`);
       return respond(socket, { ok: true, delivered: targets.length });
     }
     const msg = { from: req.from || '?', to: req.to, text: req.text ?? '', ts: Date.now() };
-    if (!deliverToWaiter(req.to, msg)) getQueue(req.to).push(msg);
-    log(`send  ${msg.from} -> ${msg.to}: ${msg.text}`);
+    deliverOrQueue(req.to, msg);
+    logMsg(msg, alive(req.to) ? '' : '（未上線，已入列）');
     // 對方不在線就提示（可能是打錯名字），訊息仍入列
     if (!alive(req.to)) return respond(socket, { ok: true, hint: `"${req.to}" 未上線，訊息已入列` });
     return respond(socket, { ok: true });
@@ -77,7 +115,7 @@ function handle(req, socket) {
       return respond(socket, { ok: false, error: '名字不可為空、"all" 或以 @ 開頭' });
     if (alive(name)) return respond(socket, { ok: false, error: `"${name}" 已被使用` });
     touch(name);
-    log(`join  ${name}`);
+    log(`${cname(name)} 上線`);
     return respond(socket, { ok: true, name });
   }
 
@@ -153,6 +191,42 @@ server.on('error', (e) => {
 });
 
 server.listen(PORT, HOST, () => {
-  log(`claude-msg broker 已啟動，監聽 ${HOST}:${PORT}`);
-  log(`關閉請按 Ctrl+C`);
+  log(`claude-msg broker 已啟動，監聽 ${HOST}:${PORT}，關閉請按 Ctrl+C`);
+  if (!chatMode) return;
+
+  // --- chat 模式：這個視窗就是人類的聊天視窗 ---
+  process.stdout.write('\x1b]0;claude-msg chat\x07'); // 視窗標題
+  rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  rl.setPrompt('你> ');
+  touch(HUMAN);
+  setInterval(() => touch(HUMAN), 60 * 1000).unref(); // 視窗開著 = user 在線
+
+  rl.on('line', (raw) => {
+    const line = raw.trim();
+    if (!line) return rl.prompt();
+    if (line === '/who') {
+      const names = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN);
+      log(names.length ? names.map((n) => `${cname(n)}(queue:${getQueue(n).length})`).join('  ') : '(沒有在線成員)');
+      return rl.prompt();
+    }
+    const sp = line.indexOf(' ');
+    const to = (sp > 0 ? line.slice(0, sp) : '').replace(/^@/, '');
+    const text = sp > 0 ? line.slice(sp + 1).trim() : '';
+    if (!to || !text) { log('用法：<成員|all> <訊息>；/who 看在線'); return rl.prompt(); }
+    touch(HUMAN);
+    if (to === 'all') {
+      const targets = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN);
+      const msg = { from: HUMAN, to: 'all', text, ts: Date.now() };
+      for (const n of targets) deliverOrQueue(n, msg);
+      logMsg(msg, `（${targets.length} 人）`);
+    } else {
+      const msg = { from: HUMAN, to, text, ts: Date.now() };
+      deliverOrQueue(to, msg);
+      logMsg(msg, alive(to) ? '' : '（未上線，已入列）');
+    }
+    rl.prompt();
+  });
+
+  log('chat 模式：輸入「成員 訊息」送訊、「all 訊息」廣播、/who 看在線');
+  rl.prompt();
 });

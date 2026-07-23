@@ -4,7 +4,7 @@
 // 身分優先序：--as <名字> > 環境變數 CLAUDE_MSG_NAME > 預設 "user"（人類）。
 // 用法：
 //   msg send <@對方|@all> <訊息...>   送訊息（@ 可省略；@all 廣播給所有在線成員）
-//   msg @對方 <訊息...>               send 的縮寫
+//   msg <對方> <訊息...>              send 的縮寫（對方須為在線成員；@ 前綴亦可，但 PowerShell 會把 @ 當 splatting）
 //   msg recv [--wait N]               收訊息；--wait N 會阻塞最多 N 秒等新訊息
 //   msg join <名字>                   以此名字上線（broker 防撞名）
 //   msg who                           看誰在線
@@ -45,10 +45,19 @@ function request(obj) {
   });
 }
 
+const KNOWN = new Set(['send', 'recv', 'join', 'who', 'up', 'ping', 'whoami']);
+
 async function main() {
   let [cmd, ...rest] = argv;
   // @xxx 開頭視同 send：msg @foo "hi" ≡ msg send foo "hi"
   if (cmd && cmd.startsWith('@')) { rest.unshift(cmd); cmd = 'send'; }
+  // msg <成員> <訊息>：不是子指令、又是在線成員（或 all）就當 send（PowerShell 的 @ 被 splatting 吃掉，裸名字才補得到 tab）
+  else if (cmd && !KNOWN.has(cmd) && rest.length) {
+    try {
+      const w = await request({ cmd: 'who' });
+      if (cmd === 'all' || (w.ok && w.peers.some((p) => p.name === cmd))) { rest.unshift(cmd); cmd = 'send'; }
+    } catch (_) { /* broker 沒開 → 落到 usage */ }
+  }
 
   try {
     if (cmd === 'send') {
@@ -104,7 +113,7 @@ async function main() {
       console.log(NAME);
 
     } else {
-      console.log('用法：msg send <@對方|@all> <訊息> | msg @對方 <訊息> | msg recv [--wait N] | msg join <名字> | msg who | msg up | msg ping | msg whoami（共通：--as <名字>）');
+      console.log('用法：msg send <@對方|@all> <訊息> | msg <在線成員> <訊息> | msg recv [--wait N] | msg join <名字> | msg who | msg up | msg ping | msg whoami（共通：--as <名字>）');
     }
   } catch (e) {
     console.error('失敗：', e.message);
