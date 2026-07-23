@@ -204,6 +204,9 @@ server.listen(PORT, HOST, () => {
     return [hits.length ? hits : cands, line];
   };
   rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
+  // readline 會攔掉 Ctrl+C（SIGINT 發到 rl 不到 process），不接手 node 就死不掉
+  rl.on('SIGINT', () => process.exit(0));
+  rl.on('close', () => process.exit(0)); // Ctrl+D 同樣退出
   rl.setPrompt('你> ');
   touch(HUMAN);
   setInterval(() => touch(HUMAN), 60 * 1000).unref(); // 視窗開著 = user 在線
