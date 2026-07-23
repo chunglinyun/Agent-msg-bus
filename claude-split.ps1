@@ -24,7 +24,25 @@ function Install-ClaudeSplit {
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $Global:ClaudeSplitBase ".claude-work")     | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Global:ClaudeSplitBase ".claude-personal") | Out-Null
+    # 假 home 的 session 看得到的 skills 位置在假 home 底下，各裝一份 msg-bus skill
+    Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-work")
+    Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-personal")
     Write-Host "已安裝到 $Global:ClaudeSplitBin" -ForegroundColor Green
+}
+
+# --- 安裝 msg-bus skill（給一般人：任何 Claude Code session 都能加入平台）---
+# 用法：Install-MsgBus -SourceDir "C:\tools\claude-msg-bus"   （裝到真 home）
+function Install-MsgBus {
+    param(
+        [Parameter(Mandatory=$true)][string]$SourceDir,
+        [string]$TargetHome = $env:USERPROFILE
+    )
+    $dest = Join-Path $TargetHome ".claude\skills\claude-msg"
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    Copy-Item (Join-Path $SourceDir "msg-bus-skill\SKILL.md") $dest -Force
+    Copy-Item (Join-Path $SourceDir "msg.js")    $dest -Force
+    Copy-Item (Join-Path $SourceDir "broker.js") $dest -Force
+    Write-Host "msg-bus skill 已安裝到 $dest" -ForegroundColor Green
 }
 
 # --- 啟動 broker（在它自己的視窗，開著就好）--------------------------
