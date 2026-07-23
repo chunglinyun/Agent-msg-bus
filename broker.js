@@ -196,7 +196,14 @@ server.listen(PORT, HOST, () => {
 
   // --- chat 模式：這個視窗就是人類的聊天視窗 ---
   process.stdout.write('\x1b]0;claude-msg chat\x07'); // 視窗標題
-  rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  // tab 補全：只補第一格（收件人），候選＝在線成員 + all + /who
+  const completer = (line) => {
+    if (line.includes(' ')) return [[], line]; // 已在打訊息內文，不補
+    const cands = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN).concat('all', '/who');
+    const hits = cands.filter((c) => c.startsWith(line));
+    return [hits.length ? hits : cands, line];
+  };
+  rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
   rl.setPrompt('你> ');
   touch(HUMAN);
   setInterval(() => touch(HUMAN), 60 * 1000).unref(); // 視窗開著 = user 在線
