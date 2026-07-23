@@ -12,6 +12,22 @@
 $Global:ClaudeSplitBase = Join-Path $env:USERPROFILE ".claude-split"
 $Global:ClaudeSplitBin  = Join-Path $Global:ClaudeSplitBase "bin"   # 放 broker.js / msg.js / msg.cmd
 $Global:ClaudeMsgPort   = 8787
+# 安裝模式設定檔：記錄這台裝的是 split 還是 skill-only，broker 路徑從這裡讀
+$Global:ClaudeMsgConfig = Join-Path $env:USERPROFILE ".claude-msgbus.json"
+
+function Write-MsgBusConfig {
+    param([string]$Mode, [string]$Broker)
+    @{ mode = $Mode; broker = $Broker; port = $Global:ClaudeMsgPort } |
+        ConvertTo-Json | Set-Content -Path $Global:ClaudeMsgConfig -Encoding UTF8
+    Write-Host "設定檔已寫入 $Global:ClaudeMsgConfig（mode=$Mode）" -ForegroundColor DarkGray
+}
+
+function Get-MsgBusConfig {
+    if (Test-Path $Global:ClaudeMsgConfig) {
+        try { return Get-Content $Global:ClaudeMsgConfig -Raw | ConvertFrom-Json } catch {}
+    }
+    return $null
+}
 
 # --- 一次性安裝：建立資料夾並複製工具 --------------------------------
 # 用法：Install-ClaudeSplit -SourceDir "C:\tools\claude-msg-bus"
@@ -27,6 +43,7 @@ function Install-ClaudeSplit {
     # 假 home 的 session 看得到的 skills 位置在假 home 底下，各裝一份 msg-bus skill
     Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-work")
     Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-personal")
+    Write-MsgBusConfig -Mode "split" -Broker (Join-Path $Global:ClaudeSplitBin "broker.js")
     Write-Host "已安裝到 $Global:ClaudeSplitBin" -ForegroundColor Green
 }
 
@@ -43,13 +60,24 @@ function Install-MsgBus {
     Copy-Item (Join-Path $SourceDir "msg.js")    $dest -Force
     Copy-Item (Join-Path $SourceDir "broker.js") $dest -Force
     Write-Host "msg-bus skill 已安裝到 $dest" -ForegroundColor Green
+    # 只有裝進真 home 才寫設定檔；split 內部灌假 home 的呼叫不算。已是 split 就不降級成 skill
+    if ($TargetHome -eq $env:USERPROFILE) {
+        $cfg = Get-MsgBusConfig
+        if (-not ($cfg -and $cfg.mode -eq "split")) {
+            Write-MsgBusConfig -Mode "skill" -Broker (Join-Path $dest "broker.js")
+        }
+    }
 }
 
 # --- 啟動 broker（在它自己的視窗，開著就好）--------------------------
 function Start-ClaudeBroker {
     param([int]$Port = $Global:ClaudeMsgPort)
-    $broker = Join-Path $Global:ClaudeSplitBin "broker.js"
-    if (-not (Test-Path $broker)) { Write-Error "找不到 broker.js：$broker（先跑 Install-ClaudeSplit）"; return }
+    # broker 路徑照設定檔的安裝模式決定；設定檔缺了才退回猜路徑
+    $cfg = Get-MsgBusConfig
+    $broker = if ($cfg -and (Test-Path $cfg.broker)) { $cfg.broker }
+              elseif (Test-Path (Join-Path $Global:ClaudeSplitBin "broker.js")) { Join-Path $Global:ClaudeSplitBin "broker.js" }
+              else { Join-Path $env:USERPROFILE ".claude\skills\claude-msg\broker.js" }
+    if (-not (Test-Path $broker)) { Write-Error "找不到 broker.js（先跑 Install-MsgBus 或 Install-ClaudeSplit）"; return }
     if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { Write-Host "broker 已在跑（port $Port），不重複啟動。" -ForegroundColor Yellow; return }
     $env:CLAUDE_MSG_PORT = "$Port"
     Write-Host "啟動 broker（port $Port）…關掉那個視窗即停止。" -ForegroundColor Green

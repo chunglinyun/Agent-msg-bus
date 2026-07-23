@@ -30,6 +30,26 @@ function cname(name) {
   return `\x1b[${colorOf.get(name)}m${name}\x1b[0m`;
 }
 
+// 顯示寬度：去掉 ANSI 色碼後，CJK 全形字算 2 格（畫框對齊要用）
+// ponytail: 只認 CJK/全形範圍，不含 ✻ 等窄寬 dingbat；夠用不上 wcwidth
+const FULLWIDTH = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/;
+function dispWidth(s) {
+  const bare = s.replace(/\x1b\[[0-9;]*m/g, '');
+  let w = 0;
+  for (const ch of bare) w += FULLWIDTH.test(ch) ? 2 : 1;
+  return w;
+}
+
+// Claude Code 風格圓角框：印一段開場橫幅
+function banner(lines) {
+  const W = Math.max(...lines.map(dispWidth)) + 2;
+  const dim = '\x1b[38;5;208m'; // 橘色邊框，呼應 Claude Code
+  const R = '\x1b[0m';
+  console.log(`${dim}╭${'─'.repeat(W)}╮${R}`);
+  for (const l of lines) console.log(`${dim}│${R} ${l}${' '.repeat(W - dispWidth(l) - 1)}${dim}│${R}`);
+  console.log(`${dim}╰${'─'.repeat(W)}╯${R}`);
+}
+
 const queues = new Map();  // name -> [msg, ...]
 const waiters = new Map(); // name -> [{ socket, timer }, ...]
 const roster = new Map();  // name -> lastSeen (ms)。ponytail: 不做 leave/prune，讀取時用 alive() 過濾即可
@@ -63,7 +83,7 @@ function deliverToWaiter(name, msg) {
 }
 
 function log(s) {
-  const line = `[${new Date().toLocaleTimeString('en-GB')}] ${s}`;
+  const line = `\x1b[90m${new Date().toLocaleTimeString('en-GB')}\x1b[0m  ${s}`;
   if (rl) {
     // 正在打字時先清掉輸入列，印完再還原（prompt(true) 保留已輸入的字）
     readline.cursorTo(process.stdout, 0);
@@ -191,8 +211,17 @@ server.on('error', (e) => {
 });
 
 server.listen(PORT, HOST, () => {
-  log(`claude-msg broker 已啟動，監聽 ${HOST}:${PORT}，關閉請按 Ctrl+C`);
-  if (!chatMode) return;
+  if (!chatMode) {
+    log(`claude-msg broker 已啟動，監聽 ${HOST}:${PORT}，關閉請按 Ctrl+C`);
+    return;
+  }
+  banner([
+    `\x1b[1m✻ claude-msg broker\x1b[0m`,
+    ``,
+    `\x1b[90m監聽\x1b[0m ${HOST}:${PORT}`,
+    `\x1b[90m成員 訊息\x1b[0m 送訊  \x1b[90m·\x1b[0m  \x1b[90mall 訊息\x1b[0m 廣播  \x1b[90m·\x1b[0m  \x1b[90m/who\x1b[0m 看在線`,
+    `\x1b[90mCtrl+C 關閉\x1b[0m`,
+  ]);
 
   // --- chat 模式：這個視窗就是人類的聊天視窗 ---
   process.stdout.write('\x1b]0;claude-msg chat\x07'); // 視窗標題
@@ -207,7 +236,7 @@ server.listen(PORT, HOST, () => {
   // readline 會攔掉 Ctrl+C（SIGINT 發到 rl 不到 process），不接手 node 就死不掉
   rl.on('SIGINT', () => process.exit(0));
   rl.on('close', () => process.exit(0)); // Ctrl+D 同樣退出
-  rl.setPrompt('你> ');
+  rl.setPrompt('\x1b[1;97m你\x1b[0m \x1b[38;5;208m›\x1b[0m ');
   touch(HUMAN);
   setInterval(() => touch(HUMAN), 60 * 1000).unref(); // 視窗開著 = user 在線
 
@@ -237,6 +266,5 @@ server.listen(PORT, HOST, () => {
     rl.prompt();
   });
 
-  log('chat 模式：輸入「成員 訊息」送訊、「all 訊息」廣播、/who 看在線');
   rl.prompt();
 });
