@@ -1,24 +1,25 @@
 #!/usr/bin/env node
-// claude-msg CLI helper：讓人類與各家 agent 用 shell 收發訊息。
+// claude-msg CLI helper: lets the human and any agent send/receive messages from a shell.
 //
-// 身分優先序：--as <名字> > 環境變數 CLAUDE_MSG_NAME > 預設 "user"（人類）。
-// 用法：
-//   msg send <@對方|@all> <訊息...>   送訊息（@ 可省略；@all 廣播給所有在線成員）
-//   msg <對方> <訊息...>              send 的縮寫（對方須為在線成員；@ 前綴亦可，但 PowerShell 會把 @ 當 splatting）
-//   msg recv [--wait N]               收訊息；--wait N 會阻塞最多 N 秒等新訊息
-//   msg join <名字>                   以此名字上線（broker 防撞名）
-//   msg who                           看誰在線
-//   msg up                            broker 沒開就在背景啟動它
-//   msg ping                          檢查 broker 是否活著
-//   msg whoami                        顯示自己的身分
-// 共通參數：--as <名字> 指定本次身分（agent 的 shell 不保留環境變數，每次都要帶）
+// Identity precedence: --as <name> > env CLAUDE_MSG_NAME > default "user" (the human).
+// Usage:
+//   msg send <@peer|@all> <message...>  send a message (@ optional; @all broadcasts to everyone online)
+//   msg <peer> <message...>             shorthand for send (peer must be online; @peer works too, but PowerShell treats @ as splatting)
+//   msg recv [--wait N]                 receive messages; --wait N blocks up to N seconds for new ones
+//   msg join <name>                     come online under this name (the broker rejects clashes)
+//   msg who                             list who is online
+//   msg up                              start the broker in the background if it isn't running
+//   msg ping                            check whether the broker is alive
+//   msg whoami                          print your own identity
+// Common flag: --as <name> sets the identity for this call (an agent's shell keeps no
+// env vars, so pass it every time)
 
 const net = require('net');
 
 const HOST = '127.0.0.1';
 const PORT = process.env.CLAUDE_MSG_PORT ? Number(process.env.CLAUDE_MSG_PORT) : 8787;
 
-// 先抽出 --as，剩下的才是子指令與參數
+// Pull out --as first; whatever is left is the subcommand and its arguments
 const argv = process.argv.slice(2);
 const asIdx = argv.indexOf('--as');
 const NAME = (asIdx >= 0 && argv[asIdx + 1]) || process.env.CLAUDE_MSG_NAME || 'user';
@@ -41,7 +42,7 @@ function request(obj) {
       }
     });
     socket.on('error', (e) => { if (!done) { done = true; reject(e); } });
-    socket.on('close', () => { if (!done) { done = true; reject(new Error('沒有回應（broker 沒開？先跑 msg up）')); } });
+    socket.on('close', () => { if (!done) { done = true; reject(new Error('no response (broker not running? try msg up)')); } });
   });
 }
 
@@ -49,74 +50,75 @@ const KNOWN = new Set(['send', 'recv', 'join', 'who', 'up', 'ping', 'whoami']);
 
 async function main() {
   let [cmd, ...rest] = argv;
-  // @xxx 開頭視同 send：msg @foo "hi" ≡ msg send foo "hi"
+  // A leading @xxx means send: msg @foo "hi" === msg send foo "hi"
   if (cmd && cmd.startsWith('@')) { rest.unshift(cmd); cmd = 'send'; }
-  // msg <成員> <訊息>：不是子指令、又是在線成員（或 all）就當 send（PowerShell 的 @ 被 splatting 吃掉，裸名字才補得到 tab）
+  // msg <member> <message>: not a subcommand but an online member (or all) means send
+  // (PowerShell eats @ as splatting, and only a bare name can be tab-completed)
   else if (cmd && !KNOWN.has(cmd) && rest.length) {
     try {
       const w = await request({ cmd: 'who' });
       if (cmd === 'all' || (w.ok && w.peers.some((p) => p.name === cmd))) { rest.unshift(cmd); cmd = 'send'; }
-    } catch (_) { /* broker 沒開 → 落到 usage */ }
+    } catch (_) { /* broker down → falls through to usage */ }
   }
 
   try {
     if (cmd === 'send') {
       const to = (rest[0] || '').replace(/^@/, '');
       const text = rest.slice(1).join(' ');
-      if (!to || !text) { console.error('用法：msg send <@對方|@all> <訊息>'); process.exit(2); }
+      if (!to || !text) { console.error('usage: msg send <@peer|@all> <message>'); process.exit(2); }
       const r = await request({ cmd: 'send', from: NAME, to, text });
-      if (!r.ok) { console.error('錯誤：', r.error); process.exit(1); }
-      if (to === 'all') console.log(`已廣播給 ${r.delivered} 個成員`);
-      else console.log(`已送出 -> ${to}` + (r.hint ? `（${r.hint}）` : ''));
+      if (!r.ok) { console.error('error:', r.error); process.exit(1); }
+      if (to === 'all') console.log(`broadcast to ${r.delivered} member(s)`);
+      else console.log(`sent -> ${to}` + (r.hint ? ` (${r.hint})` : ''));
 
     } else if (cmd === 'recv') {
       let wait = 0;
       const wi = rest.indexOf('--wait');
       if (wi >= 0) wait = Number(rest[wi + 1] || 0);
       const r = await request({ cmd: 'recv', name: NAME, wait });
-      if (!r.ok) { console.error('錯誤：', r.error); process.exit(1); }
-      if (!r.messages.length) { console.log('(沒有新訊息)'); return; }
+      if (!r.ok) { console.error('error:', r.error); process.exit(1); }
+      if (!r.messages.length) { console.log('(no new messages)'); return; }
       for (const m of r.messages) {
-        const t = new Date(m.ts).toLocaleTimeString();
+        const t = new Date(m.ts).toLocaleTimeString('en-GB');
         console.log(`[${t}] ${m.to === 'all' ? '@all ' : ''}${m.from}: ${m.text}`);
       }
 
     } else if (cmd === 'join') {
       const name = (rest[0] || '').replace(/^@/, '');
-      if (!name) { console.error('用法：msg join <名字>'); process.exit(2); }
+      if (!name) { console.error('usage: msg join <name>'); process.exit(2); }
       const r = await request({ cmd: 'join', name });
-      if (!r.ok) { console.error('錯誤：', r.error); process.exit(1); }
-      console.log(`已加入：${r.name}`);
+      if (!r.ok) { console.error('error:', r.error); process.exit(1); }
+      console.log(`joined as: ${r.name}`);
 
     } else if (cmd === 'who') {
       const r = await request({ cmd: 'who' });
-      if (!r.ok) { console.error('錯誤：', r.error); process.exit(1); }
-      if (!r.peers.length) { console.log('(沒有在線成員)'); return; }
+      if (!r.ok) { console.error('error:', r.error); process.exit(1); }
+      if (!r.peers.length) { console.log('(nobody online)'); return; }
       for (const p of r.peers) {
         const idle = Math.round((Date.now() - p.lastSeen) / 1000);
-        console.log(`${p.name}  (${p.waiting ? '等待中' : `閒置 ${idle}s`})  queue:${p.queued}`);
+        console.log(`${p.name}  (${p.waiting ? 'waiting' : `idle ${idle}s`})  queue:${p.queued}`);
       }
 
     } else if (cmd === 'up') {
-      try { await request({ cmd: 'ping' }); console.log('broker 已在執行'); return; } catch (_) {}
+      try { await request({ cmd: 'ping' }); console.log('broker already running'); return; } catch (_) {}
       const { spawn } = require('child_process');
-      // ponytail: stdio ignore，broker log 會消失；要看 log 就前景跑 node broker.js
+      // ponytail: stdio ignore, so broker logs are lost; run node broker.js in the foreground to see them
       spawn(process.execPath, [require('path').join(__dirname, 'broker.js')],
         { detached: true, stdio: 'ignore' }).unref();
-      console.log(`broker 已於背景啟動（port ${PORT}）`);
+      console.log(`broker started in the background (port ${PORT})`);
 
     } else if (cmd === 'ping') {
       const r = await request({ cmd: 'ping' });
-      console.log(r.pong ? 'broker OK' : '沒有 pong');
+      console.log(r.pong ? 'broker OK' : 'no pong');
 
     } else if (cmd === 'whoami') {
       console.log(NAME);
 
     } else {
-      console.log('用法：msg send <@對方|@all> <訊息> | msg <在線成員> <訊息> | msg recv [--wait N] | msg join <名字> | msg who | msg up | msg ping | msg whoami（共通：--as <名字>）');
+      console.log('usage: msg send <@peer|@all> <message> | msg <online member> <message> | msg recv [--wait N] | msg join <name> | msg who | msg up | msg ping | msg whoami (common: --as <name>)');
     }
   } catch (e) {
-    console.error('失敗：', e.message);
+    console.error('failed:', e.message);
     process.exit(1);
   }
 }

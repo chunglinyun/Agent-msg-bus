@@ -1,35 +1,38 @@
 ---
 name: ask-peer
-description: 同步委派一件簡單、不連貫（無狀態、一次性）的任務給「另一個 Claude Code 實例」（work 與 personal 互相），並直接拿回結果。適用於一問一答、查一個東西、跑一段整理回報等不需要跨呼叫記憶的任務。當使用者說「叫 personal 幫我查／整理…」「請 work 幫我看…」而該任務可一次做完時觸發。需要連貫脈絡、多輪來回、或對方要一直活著的協作，請改用訊息 channel（msg send/recv），不要用本 skill。
+description: Synchronously delegate one simple, self-contained (stateless, one-shot) task to the other Claude Code instance (work and personal, either direction) and get the result straight back. Good for a single question, looking something up, or running a one-off pass — anything that needs no memory across calls. Trigger when the user says "have personal look up / summarise…" or "ask work to check…" and the task can be finished in one go. For collaboration that needs continuous context, several rounds of back-and-forth, or a peer that stays alive, use the message channel (msg send/recv) instead of this skill.
 ---
 
-# ask-peer：同步委派給另一個實例
+# ask-peer: synchronous delegation to the other instance
 
-## 什麼時候用（重要）
+## When to use it (important)
 
-**用本 skill（bash / `claude -p`）—— 簡單、不連貫的任務：**
-一次就能做完、不需要記得上一次講過什麼。例如：
-「叫 personal 幫我查 TT-1720 並整理回報」「請 personal 看這個檔案有沒有問題」。
-特性：同步（馬上拿回結果）、無狀態（每次是全新的一次性 agent）、不用等收發時機。
+**Use this skill (bash / `claude -p`) — simple, self-contained tasks:**
+things finishable in one go that need no memory of what was said before. For example:
+"have personal look up TT-1720 and summarise it", "ask personal whether this file has problems".
+Characteristics: synchronous (result comes straight back), stateless (a brand-new one-shot agent
+each time), no need to coordinate send/receive timing.
 
-**不要用本 skill、改用訊息 channel —— 連貫、多輪的協作：**
-需要對方記得脈絡、你們要來回討論好幾輪、或希望對方是一個一直活著的 peer。
-那用 `node "$CLAUDE_MSG" send <peer> "…"` 與 `node "$CLAUDE_MSG" recv --wait N`。
+**Don't use this skill, use the message channel — continuous, multi-turn collaboration:**
+when the peer must remember context, when you'll go back and forth several times, or when you want
+the peer to be a long-lived presence. Then use `node "$CLAUDE_MSG" send <peer> "…"` and
+`node "$CLAUDE_MSG" recv --wait N`.
 
-一句話判準：**「這件事一次講清楚、對方做完回我就結束」→ 用 bash；「要邊做邊聊、要記得前情」→ 用 channel。**
+The one-line test: **"say it once, they do it, they answer, done" → bash; "talk while working, remember the backstory" → channel.**
 
-## 怎麼做
+## How
 
-在你的 Bash 工具執行（peer 填 `work` 或 `personal`，也就是「對方」）：
+Run this in your Bash tool (peer is `work` or `personal`, i.e. the other side):
 
 ```bash
-node "C:\Users\g3197\.claude-split\bin\askpeer.js" personal "幫我看 TT-1720 並整理回報：1) 標題與目的 2) 需求描述 3) 驗收條件"
+node "C:\Users\g3197\.claude-split\bin\askpeer.js" personal "look up TT-1720 and summarise: 1) title and purpose 2) requirements 3) acceptance criteria"
 ```
 
-它會用對方的假 home 開一個一次性 `claude -p`，**同步**把對方 agent 的輸出串回來。拿到結果後，把重點整理回報給使用者即可。
+It opens a one-shot `claude -p` under the peer's fake home and streams that agent's output back
+**synchronously**. Once you have the result, summarise the key points for the user.
 
-## 注意
+## Notes
 
-- 這是**無狀態**呼叫：對方不會記得你上一次問過什麼；需要脈絡就一次在 prompt 裡講齊，或改用 channel。
-- 對方用的是它自己的假 home（帳號／設定），所以它看得到的工具與登入狀態以那個 home 為準。
-- 逾時或對方沒裝好時會有非 0 離開碼與錯誤訊息；照訊息排查即可。
+- This is a **stateless** call: the peer won't remember your previous question. If context is needed, put it all in the prompt, or switch to the channel.
+- The peer runs under its own fake home (account/settings), so the tools and logins it sees are that home's.
+- A timeout, or a peer that isn't installed properly, produces a non-zero exit code and an error message; troubleshoot from that message.

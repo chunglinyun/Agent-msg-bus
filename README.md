@@ -1,119 +1,124 @@
-# claude-msg-bus：本機多 agent 訊息平台（Windows）
+# claude-msg-bus: a local multi-agent message platform (Windows)
 
-讓**任意數量**的 agent session（Claude Code、Codex、Gemini CLI……任何能跑 shell 的 agent）
-與人類使用者共用一個本機訊息 broker，用 `@名字` / `@all` 互相收發訊息。
-純 Node stdlib + PowerShell，零依賴。
+Lets **any number** of agent sessions (Claude Code, Codex, Gemini CLI… anything that can run
+a shell) share one local message broker with a human user, exchanging messages via
+`@name` / `@all`. Pure Node stdlib + PowerShell, zero dependencies.
 
-- 每個成員自己取名上線（`join` 防撞名），不需要預先設定身分。
-- 人類在 PowerShell 直接 `msg @名字 "..."`，agent 透過 skill 或指示範本加入。
-- `recv --wait` 阻塞等待，讓回合制 agent 做到近即時協作。
+- Every member picks its own name at join time (`join` rejects clashes); no identity setup up front.
+- The human types `msg @name "..."` straight into PowerShell; agents join via the skill or the instruction template.
+- `recv --wait` blocks, which is what gets turn-based agents to near-real-time collaboration.
 
-## 檔案
+## Files
 
-| 檔案 | 作用 |
+| File | Purpose |
 |---|---|
-| `broker.js` | 訊息匯流排（Node，常駐）。roster 成員表、每個名字一個信箱、`@all` 廣播、阻塞 recv。 |
-| `msg.js` | CLI。人類與 agent 都用它收發。 |
-| `msg.cmd` | Windows 包裝，讓 PowerShell 直接打 `msg ...`。 |
-| `msg-bus-skill/SKILL.md` | Claude Code 的 skill：agent 取名上線、收發、聽取 loop 的完整指示。 |
-| `AGENTS-template.md` | 跨 provider 通用範本，貼進 Codex 的 AGENTS.md / Gemini 的 GEMINI.md 即可。 |
-| `claude-split.ps1` | PowerShell：`Install-MsgBus` 安裝平台；另含 claude-split 隔離 launcher（見下）。 |
-| `askpeer.js` + `ask-peer-skill/` | claude-split 專用的一次性同步委派（與訊息平台互補）。 |
+| `broker.js` | The message bus (Node, long-running). Roster, one mailbox per name, `@all` broadcast, blocking recv. |
+| `msg.js` | The CLI. Humans and agents both use it to send and receive. |
+| `msg.cmd` | Windows wrapper so PowerShell can just run `msg ...`. |
+| `msg-bus-skill/SKILL.md` | The Claude Code skill: full instructions for an agent to pick a name, join, exchange messages, and run the listen loop. |
+| `AGENTS-template.md` | Provider-neutral template; paste into Codex's AGENTS.md or Gemini's GEMINI.md. |
+| `claude-split.ps1` | PowerShell: `Install-MsgBus` installs the platform; also holds the claude-split isolation launcher (see below). |
+| `askpeer.js` + `ask-peer-skill/` | One-shot synchronous delegation, claude-split only (complements the message platform). |
 
-## 安裝
+## Install
 
 ```powershell
-. "C:\tools\claude-msg-bus\claude-split.ps1"     # source 進來（建議放進 $PROFILE）
+. "C:\tools\claude-msg-bus\claude-split.ps1"     # source it (best put in $PROFILE)
 Install-MsgBus -SourceDir "C:\tools\claude-msg-bus"
 ```
 
-這會把 skill（SKILL.md + msg.js + broker.js）裝到 `~\.claude\skills\claude-msg\`，
-self-contained——你的每個 Claude Code session 從此都能加入平台。
-沒有 PowerShell 的環境就手動把那三個檔案複製過去，效果相同。
+This installs the skill (SKILL.md + msg.js + broker.js) into `~\.claude\skills\claude-msg\`,
+self-contained — every Claude Code session of yours can join the platform from then on.
+Without PowerShell, copy those three files there by hand; same result.
 
-其他 agent provider：把 `AGENTS-template.md` 的內容貼進該 agent 的指示檔（AGENTS.md / GEMINI.md），
-路徑指向任何一份 msg.js 即可。
+Other agent providers: paste the contents of `AGENTS-template.md` into that agent's
+instruction file (AGENTS.md / GEMINI.md) and point the path at any copy of msg.js.
 
-## 人類用法（PowerShell）
+## Human usage (PowerShell)
 
 ```powershell
-msg up                    # broker 沒開就在背景啟動（或前景跑 node broker.js 看 log）
-msg who                   # 看誰在線
-msg @msgbus-refactor "幫我看一下 auth 模組"    # 對指定成員發話
-msg @all "大家先停一下"                        # 廣播給所有在線成員
-msg recv                  # 收自己（user）的信
-msg recv --wait 300       # 阻塞等回覆
+msg up                    # start the broker in the background if it isn't running (or run node broker.js in the foreground to watch the log)
+msg who                   # see who is online
+msg @msgbus-refactor "take a look at the auth module"    # message a specific member
+msg @all "everyone hold on a second"                     # broadcast to everyone online
+msg recv                  # read your own (user) mail
+msg recv --wait 300       # block waiting for a reply
 ```
 
-人類的預設身分是 `user`，agent 們會用 `@user` 找你。`--as <名字>` 可臨時換身分。
+The human's default identity is `user`, which is how agents reach you: `@user`.
+`--as <name>` switches identity for one call.
 
-## agent 用法
+## Agent usage
 
-Claude Code：裝好 skill 後，跟 agent 說「加入訊息平台並持續聽」即可。agent 會：
+Claude Code: once the skill is installed, just tell the agent "join the message platform and
+keep listening". It will:
 
-1. 依「專案＋任務」自己取一個 shortname（例：`msgbus-refactor`）並 `join` 上線，回報名字給你。
-2. 收到訊息就處理、回覆給發訊者。
-3. 做完當前工作後 `recv --wait 540` 繼續聽，頻道安靜約 18 分鐘自動停止並回報。
+1. Pick its own shortname from "project + task" (e.g. `msgbus-refactor`), `join`, and report the name back to you.
+2. Handle incoming messages and reply to whoever sent them.
+3. After finishing the current job, keep listening with `recv --wait 540`, stopping automatically and reporting back after roughly 18 quiet minutes.
 
-## 協定速覽（NDJSON over `127.0.0.1:8787`）
+## Protocol at a glance (NDJSON over `127.0.0.1:8787`)
 
-| cmd | 請求 | 回應 |
+| cmd | Request | Response |
 |---|---|---|
-| `send` | `{cmd,from,to,text}`；`to:"all"` 廣播 | `{ok}`；廣播帶 `delivered`；對方不在線帶 `hint` |
-| `recv` | `{cmd,name,wait}`；`wait>0` hold 連線 | `{ok,messages:[{from,to,text,ts}]}` |
-| `join` | `{cmd,name}` | `{ok,name}`；名字活著則 `{ok:false,error}` |
+| `send` | `{cmd,from,to,text}`; `to:"all"` broadcasts | `{ok}`; broadcasts carry `delivered`; an offline recipient carries `hint` |
+| `recv` | `{cmd,name,wait}`; `wait>0` holds the connection | `{ok,messages:[{from,to,text,ts}]}` |
+| `join` | `{cmd,name}` | `{ok,name}`; if the name is still alive, `{ok:false,error}` |
 | `who` | `{cmd}` | `{ok,peers:[{name,lastSeen,waiting,queued}]}` |
 | `ping` | `{cmd}` | `{ok,pong:true}` |
 
-成員存活以 lastSeen 判定（TTL 預設 10 分鐘，`CLAUDE_MSG_STALE_MS` 可覆寫）；
-send/recv/join 都會刷新。session 死掉不用 leave，名字過期自動釋放。
+Liveness is decided by lastSeen (TTL defaults to 10 minutes, override with `CLAUDE_MSG_STALE_MS`);
+send/recv/join all refresh it. A dead session needs no leave — the name is released when it expires.
 
-### 為什麼「即時」是這樣運作的
+### Why "real time" works the way it does
 
-Claude Code 這類 agent 是**回合制**的：只在執行工具的當下才動作，沒辦法被外部訊息打斷。
-所以近即時的做法是 **blocking recv**——接收方跑 `recv --wait 540`，這個指令會 hold 住
-直到有人 `send`（立刻返回）或逾時。對方一送，你這邊幾乎瞬間拿到。
+Agents like Claude Code are **turn-based**: they only act while running a tool and cannot be
+interrupted by an outside message. So near-real-time means **blocking recv** — the receiver runs
+`recv --wait 540`, which holds until someone `send`s (returns immediately) or the wait expires.
+The moment the other side sends, you have it.
 
-> 用 loopback TCP 而不是 named pipe：跨平台、Node 內建、對回合制 agent 的阻塞/輪詢最好處理。
-> broker 只綁 `127.0.0.1`，不對外開放；訊息只存記憶體，broker 關掉即清空。
+> Loopback TCP rather than a named pipe: cross-platform, built into Node, and the easiest thing
+> for a turn-based agent to block on or poll.
+> The broker binds `127.0.0.1` only, never externally; messages live in memory and vanish when the broker stops.
 
 ---
 
-# claude-split：隔離加值（選用）
+# claude-split: optional isolation add-on
 
-想讓兩個 Claude Code 實例用**不同帳號**並存（`~\.claude.json` 互不污染）才需要這段；
-訊息平台本身不需要它。
+Only needed if you want two Claude Code instances on **different accounts** side by side
+(with `~\.claude.json` kept separate); the message platform itself does not need it.
 
 ```powershell
 Install-ClaudeSplit -SourceDir "C:\tools\claude-msg-bus"
 ```
 
-會建 `~\.claude-split\bin\`（複製 broker.js/msg.js/msg.cmd）、兩個假 home
-（`.claude-work` / `.claude-personal`，各自裝好 msg-bus skill），然後：
+This creates `~\.claude-split\bin\` (copies of broker.js/msg.js/msg.cmd) and two fake homes
+(`.claude-work` / `.claude-personal`, each with the msg-bus skill installed), and then:
 
 ```powershell
-Start-ClaudeBroker    # 視窗 1：broker
-claude-work           # 視窗 2：work 實例（USERPROFILE 指到假 home）
-claude-personal       # 視窗 3：personal 實例
+Start-ClaudeBroker    # window 1: the broker
+claude-work           # window 2: the work instance (USERPROFILE points at the fake home)
+claude-personal       # window 3: the personal instance
 ```
 
-launcher 會注入 `CLAUDE_MSG_NAME`（work / personal），所以這兩個實例在平台上
-就是名字固定的成員，不用 join 也不用 `--as`。它們也可以照常跟其他任意名字的成員收發。
+The launcher injects `CLAUDE_MSG_NAME` (work / personal), so those two instances are members
+with fixed names — no join, no `--as`. They can still exchange messages with any other member as usual.
 
-`askpeer.js`（配 `ask-peer-skill/`）是 split 專用的同步委派：用對方假 home 開一次性
-`claude -p`，一問一答；多輪連貫協作請走訊息平台。
+`askpeer.js` (with `ask-peer-skill/`) is split-only synchronous delegation: it opens a one-shot
+`claude -p` under the peer's fake home for a single question and answer. Use the message platform
+for multi-turn collaboration.
 
-## 疑難排解
+## Troubleshooting
 
-- **agent 打 `msg` 打到奇怪的東西**：Windows 內建 `msg.exe`，而 agent 的 bash 找指令只補
-  `.exe` 不補 `.cmd`——agent 一律要用 `node "<路徑>\msg.js" ...`（skill 已這樣指示）。
-  PowerShell 手動操作不受影響（profile 的 `msg` function 蓋掉了它）。
-- **`沒有回應（broker 沒開？）`**：跑 `msg up`，或前景 `node broker.js` 看 log。
-- **`port 8787 已被占用`**：broker 已在跑，別再開一個；換埠設 `CLAUDE_MSG_PORT`。
-- **改了程式沒生效**：執行時用的是複本，不是這個 repo——重跑 `Install-MsgBus`（skill 複本）
-  或 `Install-ClaudeSplit`（bin 複本）。
-- **split 第一次跑某 profile 會另外下載 claude.exe**：home 被改了，預期行為。
+- **An agent running `msg` hits something odd**: Windows ships `msg.exe`, and an agent's bash
+  resolves `.exe` but not `.cmd` — agents must always use `node "<path>\msg.js" ...` (the skill
+  says so). Manual PowerShell use is unaffected (the profile's `msg` function shadows it).
+- **`no response (broker not running?)`**: run `msg up`, or `node broker.js` in the foreground to watch the log.
+- **`port 8787 is already in use`**: the broker is already running, don't start another; set `CLAUDE_MSG_PORT` to move ports.
+- **Code changes have no effect**: what runs are the copies, not this repo — re-run `Install-MsgBus`
+  (the skill copy) or `Install-ClaudeSplit` (the bin copy).
+- **Split downloads a separate claude.exe the first time a profile runs**: the home was changed; that's expected.
 
 ## License
 
-MIT，見 [LICENSE](LICENSE)。
+MIT, see [LICENSE](LICENSE).

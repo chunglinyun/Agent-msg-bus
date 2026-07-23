@@ -1,25 +1,26 @@
-﻿# =====================================================================
+# =====================================================================
 #  claude-split.ps1
-#  兩個「隔離 + 可溝通」的 Claude Code 實例（Windows）
-#  - 隔離：各自假 home（USERPROFILE），~\.claude.json 不互相污染
-#  - 溝通：一個共用 broker（localhost TCP），用 msg CLI 收發
+#  Two isolated-but-connected Claude Code instances (Windows)
+#  - Isolation: each gets its own fake home (USERPROFILE), so ~\.claude.json never mixes
+#  - Communication: one shared broker (localhost TCP), driven by the msg CLI
 #
-#  安裝：把本檔內容貼進 PowerShell profile（notepad $PROFILE），
-#        或於 profile 裡  . "路徑\claude-split.ps1"  來 source 它。
+#  Install: paste this file into your PowerShell profile (notepad $PROFILE),
+#           or source it from the profile with  . "path\claude-split.ps1"
 # =====================================================================
 
-# --- 共用設定 -------------------------------------------------------
+# --- Shared settings ------------------------------------------------
 $Global:ClaudeSplitBase = Join-Path $env:USERPROFILE ".claude-split"
-$Global:ClaudeSplitBin  = Join-Path $Global:ClaudeSplitBase "bin"   # 放 broker.js / msg.js / msg.cmd
+$Global:ClaudeSplitBin  = Join-Path $Global:ClaudeSplitBase "bin"   # holds broker.js / msg.js / msg.cmd
 $Global:ClaudeMsgPort   = 8787
-# 安裝模式設定檔：記錄這台裝的是 split 還是 skill-only，broker 路徑從這裡讀
+# Install-mode config file: records whether this machine runs split or skill-only;
+# the broker path is read from here.
 $Global:ClaudeMsgConfig = Join-Path $env:USERPROFILE ".claude-msgbus.json"
 
 function Write-MsgBusConfig {
     param([string]$Mode, [string]$Broker)
     @{ mode = $Mode; broker = $Broker; port = $Global:ClaudeMsgPort } |
         ConvertTo-Json | Set-Content -Path $Global:ClaudeMsgConfig -Encoding UTF8
-    Write-Host "設定檔已寫入 $Global:ClaudeMsgConfig（mode=$Mode）" -ForegroundColor DarkGray
+    Write-Host "Config written to $Global:ClaudeMsgConfig (mode=$Mode)" -ForegroundColor DarkGray
 }
 
 function Get-MsgBusConfig {
@@ -29,9 +30,9 @@ function Get-MsgBusConfig {
     return $null
 }
 
-# --- 一次性安裝：建立資料夾並複製工具 --------------------------------
-# 用法：Install-ClaudeSplit -SourceDir "C:\tools\claude-msg-bus"
-#（注意：跳出 SourceDir: 提示時不要打引號；帶在 -SourceDir 後面才要引號）
+# --- One-time install: create the folders and copy the tools ---------
+# Usage: Install-ClaudeSplit -SourceDir "C:\tools\claude-msg-bus"
+# (Note: at the SourceDir: prompt, do not type quotes; quotes are only needed after -SourceDir)
 function Install-ClaudeSplit {
     param([Parameter(Mandatory=$true)][string]$SourceDir)
     New-Item -ItemType Directory -Force -Path $Global:ClaudeSplitBin | Out-Null
@@ -40,15 +41,15 @@ function Install-ClaudeSplit {
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $Global:ClaudeSplitBase ".claude-work")     | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Global:ClaudeSplitBase ".claude-personal") | Out-Null
-    # 假 home 的 session 看得到的 skills 位置在假 home 底下，各裝一份 msg-bus skill
+    # A session inside a fake home only sees skills under that home, so install a copy of the msg-bus skill in each
     Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-work")
     Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-personal")
     Write-MsgBusConfig -Mode "split" -Broker (Join-Path $Global:ClaudeSplitBin "broker.js")
-    Write-Host "已安裝到 $Global:ClaudeSplitBin" -ForegroundColor Green
+    Write-Host "Installed to $Global:ClaudeSplitBin" -ForegroundColor Green
 }
 
-# --- 安裝 msg-bus skill（給一般人：任何 Claude Code session 都能加入平台）---
-# 用法：Install-MsgBus -SourceDir "C:\tools\claude-msg-bus"   （裝到真 home）
+# --- Install the msg-bus skill (for everyone: any Claude Code session can join the platform) ---
+# Usage: Install-MsgBus -SourceDir "C:\tools\claude-msg-bus"   (installs into the real home)
 function Install-MsgBus {
     param(
         [Parameter(Mandatory=$true)][string]$SourceDir,
@@ -59,8 +60,9 @@ function Install-MsgBus {
     Copy-Item (Join-Path $SourceDir "msg-bus-skill\SKILL.md") $dest -Force
     Copy-Item (Join-Path $SourceDir "msg.js")    $dest -Force
     Copy-Item (Join-Path $SourceDir "broker.js") $dest -Force
-    Write-Host "msg-bus skill 已安裝到 $dest" -ForegroundColor Green
-    # 只有裝進真 home 才寫設定檔；split 內部灌假 home 的呼叫不算。已是 split 就不降級成 skill
+    Write-Host "msg-bus skill installed to $dest" -ForegroundColor Green
+    # Only write the config when installing into the real home; the fake-home calls made
+    # by split don't count. If split is already installed, don't downgrade it to skill.
     if ($TargetHome -eq $env:USERPROFILE) {
         $cfg = Get-MsgBusConfig
         if (-not ($cfg -and $cfg.mode -eq "split")) {
@@ -69,26 +71,27 @@ function Install-MsgBus {
     }
 }
 
-# --- 啟動 broker（在它自己的視窗，開著就好）--------------------------
+# --- Start the broker (in its own window; just leave it open) --------
 function Start-ClaudeBroker {
     param([int]$Port = $Global:ClaudeMsgPort)
-    # broker 路徑照設定檔的安裝模式決定；設定檔缺了才退回猜路徑
+    # The broker path comes from the install mode in the config file; only guess if the config is missing
     $cfg = Get-MsgBusConfig
     $broker = if ($cfg -and (Test-Path $cfg.broker)) { $cfg.broker }
               elseif (Test-Path (Join-Path $Global:ClaudeSplitBin "broker.js")) { Join-Path $Global:ClaudeSplitBin "broker.js" }
               else { Join-Path $env:USERPROFILE ".claude\skills\claude-msg\broker.js" }
-    if (-not (Test-Path $broker)) { Write-Error "找不到 broker.js（先跑 Install-MsgBus 或 Install-ClaudeSplit）"; return }
-    if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { Write-Host "broker 已在跑（port $Port），不重複啟動。" -ForegroundColor Yellow; return }
+    if (-not (Test-Path $broker)) { Write-Error "broker.js not found (run Install-MsgBus or Install-ClaudeSplit first)"; return }
+    if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { Write-Host "broker already running (port $Port), not starting another." -ForegroundColor Yellow; return }
     $env:CLAUDE_MSG_PORT = "$Port"
-    Write-Host "啟動 broker（port $Port）…關掉那個視窗即停止。" -ForegroundColor Green
+    Write-Host "Starting broker (port $Port)... close that window to stop it." -ForegroundColor Green
     Start-Process -FilePath "node" -ArgumentList @("`"$broker`"") -WindowStyle Normal
 }
 
-# --- PowerShell 用的 msg 捷徑 ---------------------------------------
-# PowerShell 的 function 優先權高於外部程式，能穩定蓋掉系統的 msg.exe。
-# （agent 的 bash 不吃這個 function，改用下面注入的 $CLAUDE_MSG 環境變數。）
-# tab 補全：第一格補子指令＋在線成員（msg raja<TAB> 直接送訊），第二格補成員名。
-# 注意 @名字 在 PowerShell 是 splatting，tab 會補到變數；請用裸名字。
+# --- The msg shortcut for PowerShell --------------------------------
+# PowerShell functions outrank external programs, so this reliably shadows the system msg.exe.
+# (An agent's bash does not see this function; it uses the $CLAUDE_MSG env var injected below.)
+# Tab completion: first field completes subcommands + online members (msg raja<TAB> sends straight
+# away), second field completes member names.
+# Note that @name is splatting in PowerShell and tab-completes to a variable; use bare names.
 function Get-ClaudeMsgPeers {
     try {
         node (Join-Path $Global:ClaudeSplitBin "msg.js") who 2>$null |
@@ -102,7 +105,7 @@ function msg {
         [ArgumentCompleter({
             param($cmdName, $paramName, $word, $ast, $bound)
             $elems = $ast.CommandElements
-            # 正在補第幾格：word 非空時它自己就是最後一個 element
+            # Which field are we completing: when $word is non-empty it is itself the last element
             $pos = if ($word) { $elems.Count - 1 } else { $elems.Count }
             $cands = if ($pos -le 1) {
                 @('send','recv','join','who','up','ping','whoami') + (Get-ClaudeMsgPeers)
@@ -116,11 +119,11 @@ function msg {
     node (Join-Path $Global:ClaudeSplitBin "msg.js") @MsgArgs
 }
 
-# --- 核心 launcher：偽造 home + 設定身分 + 注入路徑 ------------------
+# --- Core launcher: fake the home + set the identity + inject paths --
 function Invoke-ClaudeWithProfile {
     param(
-        [Parameter(Mandatory=$true)][string]$ProfileName,   # 假 home 資料夾名
-        [Parameter(Mandatory=$true)][string]$MsgName,        # 訊息身分 work / personal
+        [Parameter(Mandatory=$true)][string]$ProfileName,   # fake home folder name
+        [Parameter(Mandatory=$true)][string]$MsgName,        # message identity: work / personal
         [Parameter(ValueFromRemainingArguments=$true)]$ClaudeArgs
     )
     $targetPath = Join-Path $Global:ClaudeSplitBase $ProfileName
@@ -137,7 +140,7 @@ function Invoke-ClaudeWithProfile {
         $env:PATH            = "$profileBin;$Global:ClaudeSplitBin;$env:PATH"
         $env:CLAUDE_MSG_NAME = $MsgName
         $env:CLAUDE_MSG_PORT = "$Global:ClaudeMsgPort"
-        # 給 agent 的 bash 用的完整路徑，避免撞到系統 msg.exe：node "$CLAUDE_MSG" recv
+        # Full path for the agent's bash, so it never hits the system msg.exe: node "$CLAUDE_MSG" recv
         $env:CLAUDE_MSG      = (Join-Path $Global:ClaudeSplitBin "msg.js")
         Write-Host "--- Claude Instance: [$MsgName] ($targetPath) ---" -ForegroundColor Cyan
         & claude @ClaudeArgs

@@ -1,38 +1,39 @@
-# 訊息平台使用說明（通用範本）
+# Message platform instructions (generic template)
 
-> 把這段貼進你的 agent 指示檔（Codex 的 `AGENTS.md`、Gemini CLI 的 `GEMINI.md`、
-> 或任何能執行 shell 的 agent 的系統指示），並把 `<安裝路徑>` 換成 msg.js 的實際路徑
-> （例如 `C:\Users\你\.claude\skills\claude-msg\msg.js`）。
+> Paste this into your agent's instruction file (Codex's `AGENTS.md`, Gemini CLI's `GEMINI.md`,
+> or the system instructions of any agent that can run a shell), replacing `<install path>` with
+> the real path to msg.js (e.g. `C:\Users\you\.claude\skills\claude-msg\msg.js`).
 
 ---
 
-## 跟其他 agent 與人類使用者溝通
+## Talking to other agents and the human user
 
-本機有一個訊息平台（broker），你可以用它跟其他 agent session 及人類收發訊息。
-所有操作都透過：`node "<安裝路徑>" <子指令>`。
+There is a local message platform (a broker) you can use to exchange messages with other agent
+sessions and with the human. Everything goes through: `node "<install path>" <subcommand>`.
 
-### 上線
+### Coming online
 
-1. `node "<安裝路徑>" ping`——失敗就跑 `node "<安裝路徑>" up` 啟動 broker。
-2. 取一個 shortname：小寫英數與 `-`、兩個詞、20 字元以內；
-   第一個詞＝當前專案資料夾名（可縮短），第二個詞＝本次任務一個詞（例：`myapp-review`）。
-3. `node "<安裝路徑>" join <name>`——名字被占用（exit 1）就加 `-2`、`-3` 重試。
-4. 告訴使用者你的名字，之後**每次呼叫都帶 `--as <name>`**（shell 環境變數不跨呼叫保留，名字記在你的對話脈絡裡）。
+1. `node "<install path>" ping` — if it fails, run `node "<install path>" up` to start the broker.
+2. Pick a shortname: lowercase alphanumerics and `-`, two words, at most 20 characters;
+   first word = the current project folder name (may be shortened), second word = one word for this task (e.g. `myapp-review`).
+3. `node "<install path>" join <name>` — if the name is taken (exit 1), retry with `-2`, `-3`.
+4. Tell the user your name, then **pass `--as <name>` on every call** (shell env vars don't persist across calls; the name lives in your conversation context).
 
-### 收發
+### Sending and receiving
 
-- 送訊息：`node "<安裝路徑>" send @對方 --as <me> "內容"`
-- 廣播：`node "<安裝路徑>" send @all --as <me> "內容"`（所有在線成員，不含自己）
-- 看誰在線：`node "<安裝路徑>" who`
-- 人類使用者的預設名字是 `user`。
-- 送出後若出現「未上線，訊息已入列」提示，如實回報，不要假裝已送達。
-- 收到 `@all` 廣播，回覆時回 sender，不要回 @all。
+- Send: `node "<install path>" send @peer --as <me> "text"`
+- Broadcast: `node "<install path>" send @all --as <me> "text"` (everyone online, excluding yourself)
+- See who's online: `node "<install path>" who`
+- The human user's default name is `user`.
+- If the send reports "is offline, message queued", report that faithfully; don't pretend it was delivered.
+- When you receive an `@all` broadcast, reply to the sender, not to @all.
 
-### 聽取 loop（持續待命）
+### The listen loop (standing by)
 
-完成當前工作後執行 `node "<安裝路徑>" recv --as <me> --wait <秒數>` 等新訊息。
-wait 秒數依你的 shell 工具單次執行上限調整（留 1 分鐘緩衝；例如上限 10 分鐘就 wait 540）。
+After finishing the current job, run `node "<install path>" recv --as <me> --wait <seconds>` to wait for
+new messages. Set the wait to fit your shell tool's per-call time limit (leave a minute of slack; e.g. a
+10-minute limit means wait 540).
 
-1. 有訊息 → 逐則處理 → `send @from` 回報結果 → 回去聽。
-2. 空返回 → 再聽一次；**連續 2 次空 → 停止聽取並回報使用者**。
-3. 使用者發話永遠優先；對方說結束就停。寧可停下來問，不要無限 loop。
+1. Messages arrive → handle each one → `send @from` with the result → go back to listening.
+2. Empty return → listen once more; **two empty returns in a row → stop listening and report to the user**.
+3. The user always comes first; stop when a peer says it's over. Better to stop and ask than to loop forever.
