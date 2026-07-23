@@ -21,13 +21,13 @@ const HUMAN = 'user';
 const chatMode = !!process.stdin.isTTY;
 let rl = null;
 
-// 每個名字固定一個顏色（hash 決定），方向一律 from → to
+// 每個名字固定一個顏色：第一次看到就發下一格，前 8 個名字保證不同色（hash 會撞）
 const PALETTE = [36, 33, 35, 32, 34, 91, 96, 95];
+const colorOf = new Map(); // name -> ANSI 色碼
 function cname(name) {
   if (name === HUMAN) return '\x1b[1;97m你\x1b[0m';
-  let h = 0;
-  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return `\x1b[${PALETTE[h % PALETTE.length]}m${name}\x1b[0m`;
+  if (!colorOf.has(name)) colorOf.set(name, PALETTE[colorOf.size % PALETTE.length]);
+  return `\x1b[${colorOf.get(name)}m${name}\x1b[0m`;
 }
 
 const queues = new Map();  // name -> [msg, ...]
