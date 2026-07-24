@@ -9,19 +9,13 @@
 # =====================================================================
 
 # --- Shared settings ------------------------------------------------
-$Global:ClaudeSplitBase = Join-Path $env:USERPROFILE ".claude-split"
-$Global:ClaudeSplitBin  = Join-Path $Global:ClaudeSplitBase "bin"   # holds broker.js / msg.js / msg.cmd
-$Global:ClaudeMsgPort   = 8787
-# Install-mode config file: records whether this machine runs split or skill-only;
-# the broker path is read from here.
-$Global:ClaudeMsgConfig = Join-Path $env:USERPROFILE ".claude-msgbus.json"
-
-function Write-MsgBusConfig {
-    param([string]$Mode, [string]$Broker)
-    @{ mode = $Mode; broker = $Broker; port = $Global:ClaudeMsgPort } |
-        ConvertTo-Json | Set-Content -Path $Global:ClaudeMsgConfig -Encoding UTF8
-    Write-Host "Config written to $Global:ClaudeMsgConfig (mode=$Mode)" -ForegroundColor DarkGray
-}
+# Inside a split session USERPROFILE points at a fake home under .claude-split;
+# strip that suffix to get the real home. The config file always lives there —
+# it is the single bootstrap point, everything else is read from it.
+$Global:ClaudeSplitRealHome = $env:USERPROFILE -replace '\\\.claude-split\\.*$', ''
+# Config file: install mode (split/skill), the source clone dir, the base dir,
+# and the broker path.
+$Global:ClaudeMsgConfig = Join-Path $Global:ClaudeSplitRealHome ".claude-msgbus.json"
 
 function Get-MsgBusConfig {
     if (Test-Path $Global:ClaudeMsgConfig) {
@@ -30,13 +24,39 @@ function Get-MsgBusConfig {
     return $null
 }
 
+# Base/bin/port come from the config when present; USERPROFILE derivation is only
+# the pre-install fallback (a bare machine before Install-* has ever run).
+$script:__msgBusCfg = Get-MsgBusConfig
+$Global:ClaudeSplitBase = if ($script:__msgBusCfg -and $script:__msgBusCfg.base) { [string]$script:__msgBusCfg.base }
+                          else { Join-Path $Global:ClaudeSplitRealHome ".claude-split" }
+$Global:ClaudeSplitBin  = Join-Path $Global:ClaudeSplitBase "bin"   # holds broker.js / msg.js / msg.cmd
+$Global:ClaudeMsgPort   = if ($script:__msgBusCfg -and $script:__msgBusCfg.port) { [int]$script:__msgBusCfg.port } else { 8787 }
+
+function Write-MsgBusConfig {
+    param([string]$Mode, [string]$Broker, [string]$SourceDir)
+    @{ mode = $Mode; source = $SourceDir; base = $Global:ClaudeSplitBase; broker = $Broker; port = $Global:ClaudeMsgPort } |
+        ConvertTo-Json | Set-Content -Path $Global:ClaudeMsgConfig -Encoding UTF8
+    Write-Host "Config written to $Global:ClaudeMsgConfig (mode=$Mode)" -ForegroundColor DarkGray
+}
+
+# -SourceDir omitted on a re-install = reuse the clone dir recorded in the config.
+function Resolve-MsgBusSource {
+    param([string]$SourceDir)
+    if ($SourceDir) { return $SourceDir }
+    $cfg = Get-MsgBusConfig
+    if ($cfg -and $cfg.source) { return [string]$cfg.source }
+    return $null
+}
+
 # --- One-time install: create the folders and copy the tools ---------
 # Usage: Install-ClaudeSplit -SourceDir "C:\tools\claude-msg-bus"
 # (Note: at the SourceDir: prompt, do not type quotes; quotes are only needed after -SourceDir)
 function Install-ClaudeSplit {
-    param([Parameter(Mandatory=$true)][string]$SourceDir)
+    param([string]$SourceDir)
+    $SourceDir = Resolve-MsgBusSource $SourceDir
+    if (-not $SourceDir) { Write-Error "no -SourceDir given and none recorded in $Global:ClaudeMsgConfig; run Install-ClaudeSplit -SourceDir <clone dir>"; return }
     New-Item -ItemType Directory -Force -Path $Global:ClaudeSplitBin | Out-Null
-    foreach ($f in @("broker.js", "msg.js", "msg.cmd")) {
+    foreach ($f in @("broker.js", "msg.js", "msg.cmd", "sendkeys.ps1")) {
         Copy-Item (Join-Path $SourceDir $f) (Join-Path $Global:ClaudeSplitBin $f) -Force
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $Global:ClaudeSplitBase ".claude-work")     | Out-Null
@@ -44,7 +64,7 @@ function Install-ClaudeSplit {
     # A session inside a fake home only sees skills under that home, so install a copy of the msg-bus skill in each
     Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-work")
     Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-personal")
-    Write-MsgBusConfig -Mode "split" -Broker (Join-Path $Global:ClaudeSplitBin "broker.js")
+    Write-MsgBusConfig -Mode "split" -Broker (Join-Path $Global:ClaudeSplitBin "broker.js") -SourceDir $SourceDir
     Write-Host "Installed to $Global:ClaudeSplitBin" -ForegroundColor Green
 }
 
@@ -52,9 +72,11 @@ function Install-ClaudeSplit {
 # Usage: Install-MsgBus -SourceDir "C:\tools\claude-msg-bus"   (installs into the real home)
 function Install-MsgBus {
     param(
-        [Parameter(Mandatory=$true)][string]$SourceDir,
-        [string]$TargetHome = $env:USERPROFILE
+        [string]$SourceDir,
+        [string]$TargetHome = $Global:ClaudeSplitRealHome
     )
+    $SourceDir = Resolve-MsgBusSource $SourceDir
+    if (-not $SourceDir) { Write-Error "no -SourceDir given and none recorded in $Global:ClaudeMsgConfig; run Install-MsgBus -SourceDir <clone dir>"; return }
     $dest = Join-Path $TargetHome ".claude\skills\claude-msg"
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Copy-Item (Join-Path $SourceDir "msg-bus-skill\SKILL.md") $dest -Force
@@ -63,10 +85,10 @@ function Install-MsgBus {
     Write-Host "msg-bus skill installed to $dest" -ForegroundColor Green
     # Only write the config when installing into the real home; the fake-home calls made
     # by split don't count. If split is already installed, don't downgrade it to skill.
-    if ($TargetHome -eq $env:USERPROFILE) {
+    if ($TargetHome -eq $Global:ClaudeSplitRealHome) {
         $cfg = Get-MsgBusConfig
         if (-not ($cfg -and $cfg.mode -eq "split")) {
-            Write-MsgBusConfig -Mode "skill" -Broker (Join-Path $dest "broker.js")
+            Write-MsgBusConfig -Mode "skill" -Broker (Join-Path $dest "broker.js") -SourceDir $SourceDir
         }
     }
 }
@@ -78,7 +100,7 @@ function Start-ClaudeBroker {
     $cfg = Get-MsgBusConfig
     $broker = if ($cfg -and (Test-Path $cfg.broker)) { $cfg.broker }
               elseif (Test-Path (Join-Path $Global:ClaudeSplitBin "broker.js")) { Join-Path $Global:ClaudeSplitBin "broker.js" }
-              else { Join-Path $env:USERPROFILE ".claude\skills\claude-msg\broker.js" }
+              else { Join-Path $Global:ClaudeSplitRealHome ".claude\skills\claude-msg\broker.js" }
     if (-not (Test-Path $broker)) { Write-Error "broker.js not found (run Install-MsgBus or Install-ClaudeSplit first)"; return }
     if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { Write-Host "broker already running (port $Port), not starting another." -ForegroundColor Yellow; return }
     $env:CLAUDE_MSG_PORT = "$Port"
@@ -119,6 +141,41 @@ function msg {
     node (Join-Path $Global:ClaudeSplitBin "msg.js") @MsgArgs
 }
 
+# --- Session registry: lets broker chat commands (/stop) address the window ----
+# sessions.json entries: { name, profile, pid, hwnd, startedAt }, keyed by pid so
+# two sessions of the same launcher coexist. name starts as the launcher identity
+# (work/personal) and is rewritten to the agent's bus name by msg.js on join;
+# profile stays work/personal (/usage derives the transcript dir from it).
+# The HWND is whatever window is foreground when the launcher runs — i.e. the
+# window you typed claude-work into. Windows Terminal tabs share one HWND, so for
+# reliable /stop targeting run each split session in its own window.
+function Register-ClaudeSplitSession {
+    param([string]$MsgName)
+    if (-not ('ClaudeSplit.Native' -as [type])) {
+        Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();' -Name Native -Namespace ClaudeSplit
+    }
+    $hwnd = [long][ClaudeSplit.Native]::GetForegroundWindow()
+    $file = Join-Path $Global:ClaudeSplitBase "sessions.json"
+    $sessions = @()
+    # PS 5.1: ConvertFrom-Json emits a JSON array as ONE pipeline item; assign to a
+    # variable first, then pipe, so it enumerates instead of nesting.
+    # Keep only other, still-alive sessions (drops our own stale entry and any
+    # entry whose launcher process is gone — crashes never Unregister).
+    if (Test-Path $file) { try { $parsed = Get-Content $file -Raw | ConvertFrom-Json; $sessions = @($parsed | Where-Object { $_ -and $_.pid -ne $PID -and (Get-Process -Id $_.pid -ErrorAction SilentlyContinue) }) } catch {} }
+    $sessions += [pscustomobject]@{ name = $MsgName; profile = $MsgName; pid = $PID; hwnd = $hwnd; startedAt = (Get-Date -Format o) }
+    ConvertTo-Json -InputObject $sessions | Set-Content -Path $file -Encoding UTF8
+}
+
+function Unregister-ClaudeSplitSession {
+    $file = Join-Path $Global:ClaudeSplitBase "sessions.json"
+    if (-not (Test-Path $file)) { return }
+    try {
+        $parsed = Get-Content $file -Raw | ConvertFrom-Json
+        $sessions = @($parsed | Where-Object { $_ -and $_.pid -ne $PID })
+        ConvertTo-Json -InputObject $sessions | Set-Content -Path $file -Encoding UTF8
+    } catch {}
+}
+
 # --- Core launcher: fake the home + set the identity + inject paths --
 function Invoke-ClaudeWithProfile {
     param(
@@ -129,12 +186,15 @@ function Invoke-ClaudeWithProfile {
     $targetPath = Join-Path $Global:ClaudeSplitBase $ProfileName
     $profileBin = Join-Path $targetPath ".local\bin"
     New-Item -ItemType Directory -Path $profileBin -Force | Out-Null
+    Register-ClaudeSplitSession -MsgName $MsgName
 
     $oldUserProfile = $env:USERPROFILE
     $oldPath        = $env:PATH
     $oldMsgName     = $env:CLAUDE_MSG_NAME
     $oldMsgPort     = $env:CLAUDE_MSG_PORT
     $oldMsg         = $env:CLAUDE_MSG
+    $oldSessPid     = $env:CLAUDE_SPLIT_SESSION_PID
+    $oldSessFile    = $env:CLAUDE_SPLIT_SESSIONS_FILE
     try {
         $env:USERPROFILE     = $targetPath
         $env:PATH            = "$profileBin;$Global:ClaudeSplitBin;$env:PATH"
@@ -142,6 +202,10 @@ function Invoke-ClaudeWithProfile {
         $env:CLAUDE_MSG_PORT = "$Global:ClaudeMsgPort"
         # Full path for the agent's bash, so it never hits the system msg.exe: node "$CLAUDE_MSG" recv
         $env:CLAUDE_MSG      = (Join-Path $Global:ClaudeSplitBin "msg.js")
+        # msg.js join uses these to rewrite this session's registry entry to the bus
+        # name (the fake USERPROFILE makes the file path underivable from inside).
+        $env:CLAUDE_SPLIT_SESSION_PID   = "$PID"
+        $env:CLAUDE_SPLIT_SESSIONS_FILE = (Join-Path $Global:ClaudeSplitBase "sessions.json")
         Write-Host "--- Claude Instance: [$MsgName] ($targetPath) ---" -ForegroundColor Cyan
         & claude @ClaudeArgs
     }
@@ -151,6 +215,9 @@ function Invoke-ClaudeWithProfile {
         $env:CLAUDE_MSG_NAME = $oldMsgName
         $env:CLAUDE_MSG_PORT = $oldMsgPort
         $env:CLAUDE_MSG      = $oldMsg
+        $env:CLAUDE_SPLIT_SESSION_PID   = $oldSessPid
+        $env:CLAUDE_SPLIT_SESSIONS_FILE = $oldSessFile
+        Unregister-ClaudeSplitSession
     }
 }
 

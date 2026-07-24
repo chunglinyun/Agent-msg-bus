@@ -88,6 +88,19 @@ async function main() {
       if (!name) { console.error('usage: msg join <name>'); process.exit(2); }
       const r = await request({ cmd: 'join', name });
       if (!r.ok) { console.error('error:', r.error); process.exit(1); }
+      // Inside a split session, rewrite our registry entry to the bus name so the
+      // broker's /stop and /usage can target it. Best-effort: outside split the env
+      // vars are absent and this is a no-op.
+      const sessPid = process.env.CLAUDE_SPLIT_SESSION_PID, sessFile = process.env.CLAUDE_SPLIT_SESSIONS_FILE;
+      if (sessPid && sessFile) {
+        try {
+          const fs = require('fs');
+          // strip the BOM Set-Content -Encoding UTF8 writes on PS 5.1
+          const sessions = JSON.parse(fs.readFileSync(sessFile, 'utf8').replace(/^﻿/, ''));
+          const s = (Array.isArray(sessions) ? sessions : [sessions]).find((x) => x && String(x.pid) === sessPid);
+          if (s) { s.name = r.name; fs.writeFileSync(sessFile, JSON.stringify(Array.isArray(sessions) ? sessions : [sessions], null, 2)); }
+        } catch (_) { /* registry missing/corrupt — joining still succeeded */ }
+      }
       console.log(`joined as: ${r.name}`);
 
     } else if (cmd === 'who') {

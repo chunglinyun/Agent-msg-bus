@@ -19,17 +19,26 @@ a shell) share one local message broker with a human user, exchanging messages v
 | `AGENTS-template.md` | Provider-neutral template; paste into Codex's AGENTS.md or Gemini's GEMINI.md. |
 | `claude-split.ps1` | PowerShell: `Install-MsgBus` installs the platform; also holds the claude-split isolation launcher (see below). |
 | `askpeer.js` + `ask-peer-skill/` | One-shot synchronous delegation, claude-split only (complements the message platform). |
+| `sendkeys.ps1` | Keyboard-injection helper for the chat window's `/stop` and `/compact` commands, claude-split only. |
 
 ## Install
 
+Clone the repo anywhere, then point the install at the clone:
+
 ```powershell
-. "C:\tools\claude-msg-bus\claude-split.ps1"     # source it (best put in $PROFILE)
-Install-MsgBus -SourceDir "C:\tools\claude-msg-bus"
+git clone https://github.com/chunglinyun/Agent-msg-bus.git
+$repo = "<path where you cloned it>"      # e.g. C:\src\Agent-msg-bus
+. "$repo\claude-split.ps1"                # source it (best put in $PROFILE)
+Install-MsgBus -SourceDir $repo
 ```
 
 This installs the skill (SKILL.md + msg.js + broker.js) into `~\.claude\skills\claude-msg\`,
 self-contained — every Claude Code session of yours can join the platform from then on.
 Without PowerShell, copy those three files there by hand; same result.
+
+Installing writes `~\.claude-msgbus.json` (install mode, clone dir, base dir, broker path).
+The script reads its paths from it — so shells opened inside a split session still resolve
+the real locations — and re-installs can omit `-SourceDir` (the recorded clone dir is reused).
 
 Other agent providers: paste the contents of `AGENTS-template.md` into that agent's
 instruction file (AGENTS.md / GEMINI.md) and point the path at any copy of msg.js.
@@ -85,24 +94,58 @@ The moment the other side sends, you have it.
 
 # claude-split: optional isolation add-on
 
-Only needed if you want two Claude Code instances on **different accounts** side by side
-(with `~\.claude.json` kept separate); the message platform itself does not need it.
+**When you need it**: only when you run **two or more Claude Code instances side by side**
+(e.g. different accounts or subscriptions) and want their `~\.claude.json` / `~\.claude\`
+kept separate. Running a single instance, or several instances on the same account?
+Skip this whole section — `Install-MsgBus` above is all the message platform needs.
 
 ```powershell
-Install-ClaudeSplit -SourceDir "C:\tools\claude-msg-bus"
+Install-ClaudeSplit -SourceDir $repo      # $repo = your clone path, as above
 ```
 
-This creates `~\.claude-split\bin\` (copies of broker.js/msg.js/msg.cmd) and two fake homes
+This creates `~\.claude-split\bin\` (copies of broker.js/msg.js/msg.cmd/sendkeys.ps1) and two fake homes
 (`.claude-work` / `.claude-personal`, each with the msg-bus skill installed), and then:
 
 ```powershell
 Start-ClaudeBroker    # window 1: the broker
-claude-work           # window 2: the work instance (USERPROFILE points at the fake home)
-claude-personal       # window 3: the personal instance
+claude-work           # window 2: one instance (USERPROFILE points at its fake home)
+claude-personal       # window 3: the other instance
 ```
 
-The launcher injects `CLAUDE_MSG_NAME` (work / personal), so those two instances are members
-with fixed names — no join, no `--as`. They can still exchange messages with any other member as usual.
+`work` and `personal` are just the two **default profile names** — nothing about them is
+special, they don't have to match your use. Each profile is one line; add your own alongside
+the built-in two (and give it the skill copy):
+
+```powershell
+function claude-research { Invoke-ClaudeWithProfile -ProfileName ".claude-research" -MsgName "research" @args }
+Install-MsgBus -SourceDir $repo -TargetHome (Join-Path $env:USERPROFILE ".claude-split\.claude-research")
+```
+
+The launcher injects `CLAUDE_MSG_NAME` (the profile's MsgName), so each instance is a member
+with a fixed name — no join, no `--as`. They can still exchange messages with any other member as usual.
+
+## Chat-window native commands (split only, zero token)
+
+When the broker runs in the foreground (chat mode), these commands act on split sessions
+directly — no message, no model turn, no tokens. `<session>` is the agent's bus name
+(Tab-completes; the launcher registers the session in `~\.claude-split\sessions.json` and
+`msg join` rewrites the entry to the bus name). The launcher profile (`work` / `personal`)
+still works as a fallback while it matches exactly one session:
+
+- `/stop <session>` — press Esc in that session's terminal window (the only external
+  interrupt Claude Code offers). Implemented as keyboard injection: the broker spawns
+  `sendkeys.ps1`, which focuses the recorded window, sends Esc, and restores focus.
+  Cost: focus flicks away for ~0.3s.
+- `/compact <session>` — type `/compact` + Enter in that session's input box (same
+  injection path as `/stop`). Lands in whatever the input box holds — if you're
+  mid-typing in that window, the text mixes.
+- `/usage <session>` — token totals (today / all time) computed by reading that session's
+  fake-home transcripts (`.claude\projects\**\*.jsonl`). No injection at all.
+
+Caveats: only sessions started by a split launcher are addressable (agents that joined the
+bus some other way have no registered window). Windows Terminal tabs share one window
+handle — run each split session in its own window for reliable `/stop`. `/stop` fails
+(with a clear error) while the desktop is locked.
 
 `askpeer.js` (with `ask-peer-skill/`) is split-only synchronous delegation: it opens a one-shot
 `claude -p` under the peer's fake home for a single question and answer. Use the message platform
