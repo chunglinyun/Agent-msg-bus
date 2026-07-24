@@ -235,6 +235,10 @@ server.listen(PORT, HOST, () => {
   ]);
 
   // --- chat mode: this window is the human's chat window ---
+  // Pin the input line to the window bottom: pad below the banner (7 rows) so the
+  // cursor starts on the last row; every log() redraw keeps the prompt there.
+  // ponytail: no DECSTBM scroll region, padding is enough; resize not handled
+  process.stdout.write('\n'.repeat(Math.max(0, (process.stdout.rows || 24) - 8)));
   process.stdout.write('\x1b]0;claude-msg chat\x07'); // window title
   // Tab completion: first field only (the recipient); candidates = online members + all + /who
   const completer = (line) => {
