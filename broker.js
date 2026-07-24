@@ -16,6 +16,7 @@ const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
+const { PassThrough } = require('stream');
 
 const HOST = '127.0.0.1'; // loopback only, unreachable from outside
 const PORT = process.env.CLAUDE_MSG_PORT ? Number(process.env.CLAUDE_MSG_PORT) : 8787;
@@ -28,6 +29,13 @@ const PORT = process.env.CLAUDE_MSG_PORT ? Number(process.env.CLAUDE_MSG_PORT) :
 const HUMAN = 'user';
 const chatMode = !!process.stdin.isTTY;
 let rl = null;
+// Rows reserved at the bottom for the input line: fixed head-room so a typed line
+// can wrap twice without touching the message area. Nothing may wrap past the last
+// reserved row — the terminal clamps the cursor there and readline's row
+// bookkeeping falls apart (the line gets redrawn over the separator, duplicated).
+// feed() enforces this: wide pastes become a stash token, typed overflow is
+// dropped with a bell.
+const inputRows = 3;
 
 // One fixed colour per name: hand out the next slot on first sight, so the first
 // 8 names are guaranteed distinct (hashing would collide).
@@ -116,7 +124,7 @@ function log(s) {
     // save the cursor, write at the region's bottom margin (LF scrolls the
     // region), restore. The bottom rows are never touched, no prompt redraw needed.
     const rows = process.stdout.rows || 24;
-    process.stdout.write(`\x1b7\x1b[${rows - 2};1H\n${line}\x1b8`);
+    process.stdout.write(`\x1b7\x1b[${rows - inputRows - 1};1H\n${line}\x1b8`);
   } else console.log(line);
 }
 
@@ -402,7 +410,7 @@ server.listen(PORT, HOST, () => {
       const fill = Math.max(0, cols - 2 - dispWidth(label));
       line = `\x1b[38;5;208m──\x1b[0m${label}\x1b[38;5;208m${'─'.repeat(fill)}\x1b[0m`;
     }
-    process.stdout.write(`\x1b7\x1b[${rows - 1};1H\x1b[2K${line}\x1b8`);
+    process.stdout.write(`\x1b7\x1b[${rows - inputRows};1H\x1b[2K${line}\x1b8`);
   };
   syncSpinner = () => {
     // ponytail: STALE_MS cap so a member that dies mid-work can't spin forever
@@ -411,15 +419,32 @@ server.listen(PORT, HOST, () => {
     if (!thinking.size && spinTimer) { clearInterval(spinTimer); spinTimer = null; }
     drawStatus();
   };
+  // The bottom inputRows rows hold the (possibly wrapped) input line; the row
+  // above them is the separator.
   const anchorInput = () => {
     const rows = process.stdout.rows || 24;
-    process.stdout.write(`\x1b[1;${rows - 2}r`); // messages scroll above the separator
+    process.stdout.write(`\x1b[1;${rows - inputRows - 1}r`); // messages scroll above the separator
     drawStatus();
-    process.stdout.write(`\x1b[${rows};1H`);
+    process.stdout.write(`\x1b[${rows - inputRows + 1};1H`);
+  };
+  // Re-anchor + clear the input strip, then redraw the prompt. After a submitted
+  // line the cursor has drifted below the anchor (readline echoed a newline), and
+  // readline's own refresh walks up from where it *thinks* the line started —
+  // resetting prevRows tells it the cursor is back on the line's first row.
+  // ponytail: rl.prevRows is a readline private; worst case a node bump degrades
+  // this to a cosmetic misdraw, not a crash
+  const promptAnchored = (preserve) => {
+    anchorInput();
+    process.stdout.write('\x1b[0J'); // wipe stale input rows below the anchor
+    rl.prevRows = 0;
+    rl.prompt(preserve);
   };
   anchorInput();
-  process.stdout.on('resize', () => { anchorInput(); rl.prompt(true); });
-  process.on('exit', () => process.stdout.write('\x1b[r')); // release the region or the shell stays confined
+  process.stdout.on('resize', () => promptAnchored(true));
+  process.on('exit', () => { // release the region or the shell stays confined
+    process.stdout.write('\x1b[r\x1b[?2004l');
+    try { process.stdin.setRawMode(false); } catch (_) {}
+  });
   process.stdout.write('\x1b]0;claude-msg chat\x07'); // window title
   // Tab completion: first field = recipient/command; /stop and /usage also
   // complete their target from the session registry (bus names + profiles).
@@ -435,21 +460,76 @@ server.listen(PORT, HOST, () => {
     const hits = cands.filter((c) => c.startsWith(line));
     return [hits.length ? hits : cands, line];
   };
-  rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
+  // Bracketed paste: the terminal wraps pasted text in \x1b[200~ … \x1b[201~. A
+  // PassThrough between stdin and readline intercepts the paste: small single-line
+  // pastes flow through (tabs to spaces, so they can't trigger completion), but a
+  // multi-line or large paste never enters the input line — readline would fire
+  // 'line' per newline and send only the first, and a huge line wraps off the
+  // reserved rows. Instead the content is stashed and the line gets a compact
+  // ⟦pasteN:…⟧ token, expanded back to the original text on send. Terminals
+  // without bracketed paste just fall back to the old line-per-line behaviour.
+  const rlInput = new PassThrough({ encoding: 'utf8' });
+  const pasteBufs = []; // stashed pastes, index = token number; cleared on send
+  let pasting = false, pasteAcc = '', pendingIn = '';
+  const PROMPT = '    \x1b[1;97myou\x1b[0m \x1b[38;5;208m›\x1b[0m '; // indented so it never lines up under the timestamps
+  // Columns still free in the input strip: strip capacity minus prompt, minus the
+  // current line, minus one spare cell so the cursor itself never wraps off the
+  // last reserved row. Everything entering the line is gated on this — the strip
+  // is fixed at inputRows and overflow breaks readline's cursor math (see above).
+  // Display width, not length: CJK chars take two columns.
+  const inputRoom = () =>
+    (process.stdout.columns || 80) * inputRows - dispWidth(PROMPT) - 1 - dispWidth(rl ? rl.line : '');
+  const feed = (chunk) => {
+    let s = pendingIn + chunk; pendingIn = '';
+    // hold back a chunk-final partial paste marker for the next chunk
+    const cut = s.match(/(?:\x1b|\x1b\[|\x1b\[2|\x1b\[20|\x1b\[20[01])$/);
+    if (cut) { pendingIn = cut[0]; s = s.slice(0, s.length - cut[0].length); }
+    let out = '';
+    for (let i = 0; i < s.length; ) {
+      if (s.startsWith('\x1b[200~', i)) { pasting = true; pasteAcc = ''; i += 6; continue; }
+      if (s.startsWith('\x1b[201~', i)) {
+        pasting = false; i += 6;
+        const multi = /[\r\n]/.test(pasteAcc);
+        if (!multi && dispWidth(pasteAcc) <= inputRoom() - dispWidth(out)) { out += pasteAcc.replace(/\t/g, '  '); continue; }
+        const norm = pasteAcc.replace(/\r\n?/g, '\n');
+        out += `⟦paste${pasteBufs.length}:${norm.split('\n').length}行⟧`; // ⟦pasteN:N行⟧
+        pasteBufs.push(norm);
+        continue;
+      }
+      if (pasting) pasteAcc += s[i++]; else out += s[i++];
+    }
+    // Typed text past the strip's remaining room is dropped with a bell instead of
+    // letting readline wrap off-screen. Chunks holding control bytes (escape
+    // sequences, backspace, enter) pass untouched — they edit, not extend.
+    // ponytail: a paste token that lands on a nearly-full line can be truncated
+    // mid-token (sent as literal text); rare enough to accept
+    if (out && !/[\x00-\x1f\x7f]/.test(out)) {
+      let room = inputRoom(), kept = '';
+      for (const ch of out) { room -= FULLWIDTH.test(ch) ? 2 : 1; if (room < 0) break; kept += ch; }
+      if (kept.length < out.length) { process.stdout.write('\x07'); out = kept; }
+    }
+    if (out) rlInput.write(out);
+  };
+  process.stdin.setRawMode(true);
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', feed);
+  process.stdout.write('\x1b[?2004h'); // ask the terminal for bracketed paste
+
+  rl = readline.createInterface({ input: rlInput, output: process.stdout, completer, terminal: true });
   // readline swallows Ctrl+C (SIGINT goes to rl, not process); without taking it over node never dies
   rl.on('SIGINT', () => process.exit(0));
   rl.on('close', () => process.exit(0)); // Ctrl+D quits the same way
-  rl.setPrompt('    \x1b[1;97myou\x1b[0m \x1b[38;5;208m›\x1b[0m '); // indented so it never lines up under the timestamps
+  rl.setPrompt(PROMPT);
   touch(HUMAN);
   setInterval(() => touch(HUMAN), 60 * 1000).unref(); // window open = user is online
 
   rl.on('line', (raw) => {
     const line = raw.trim();
-    if (!line) return rl.prompt();
+    if (!line) return promptAnchored();
     if (line === '/who') {
       const names = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN);
       log(names.length ? names.map((n) => `${cname(n)}(queue:${getQueue(n).length})`).join('  ') : '(nobody online)');
-      return rl.prompt();
+      return promptAnchored();
     }
     // Native commands for split sessions: /stop = Esc injection, /compact = typed
     // slash-command injection, /usage = transcript stats.
@@ -460,16 +540,20 @@ server.listen(PORT, HOST, () => {
       if (cm[1] === 'stop') stopSession(cm[2]);
       else if (cm[1] === 'compact') compactSession(cm[2]);
       else log(usageReport(cm[2]));
-      return rl.prompt();
+      return promptAnchored();
     }
     if (line.startsWith('/')) {
       log('commands: /who · /stop <session> · /compact <session> · /usage <session>   (session = bus name, or launcher profile like work when unambiguous)');
-      return rl.prompt();
+      return promptAnchored();
     }
     const sp = line.indexOf(' ');
     const to = (sp > 0 ? line.slice(0, sp) : '').replace(/^@/, '');
-    const text = sp > 0 ? line.slice(sp + 1).trim() : '';
-    if (!to || !text) { log('usage: <member|all> <message>; /who lists who is online'); return rl.prompt(); }
+    // expand stashed-paste tokens back into the original (possibly multi-line) text
+    const text = sp > 0
+      ? line.slice(sp + 1).replace(/⟦paste(\d+):[^⟧]*⟧/g, (m, i) => pasteBufs[i] ?? m).trim()
+      : '';
+    pasteBufs.length = 0; // consumed (or abandoned) with this line
+    if (!to || !text) { log('usage: <member|all> <message>; /who lists who is online'); return promptAnchored(); }
     touch(HUMAN);
     if (to === 'all') {
       const targets = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN);
@@ -481,7 +565,7 @@ server.listen(PORT, HOST, () => {
       deliverOrQueue(to, msg);
       logMsg(msg, alive(to) ? '' : ' (offline, queued)');
     }
-    rl.prompt();
+    promptAnchored();
   });
 
   rl.prompt();
