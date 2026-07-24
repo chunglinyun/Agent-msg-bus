@@ -19,7 +19,7 @@ a shell) share one local message broker with a human user, exchanging messages v
 | `AGENTS-template.md` | Provider-neutral template; paste into Codex's AGENTS.md or Gemini's GEMINI.md. |
 | `claude-split.ps1` | PowerShell: `Install-MsgBus` installs the platform; also holds the claude-split isolation launcher (see below). |
 | `askpeer.js` + `ask-peer-skill/` | One-shot synchronous delegation, claude-split only (complements the message platform). |
-| `sendkeys.ps1` | Keyboard-injection helper for the chat window's `/stop` command, claude-split only. |
+| `sendkeys.ps1` | Keyboard-injection helper for the chat window's `/stop` and `/compact` commands, claude-split only. |
 
 ## Install
 
@@ -126,7 +126,7 @@ with a fixed name — no join, no `--as`. They can still exchange messages with 
 
 ## Chat-window native commands (split only, zero token)
 
-When the broker runs in the foreground (chat mode), two commands act on split sessions
+When the broker runs in the foreground (chat mode), these commands act on split sessions
 directly — no message, no model turn, no tokens. `<session>` is the agent's bus name
 (Tab-completes; the launcher registers the session in `~\.claude-split\sessions.json` and
 `msg join` rewrites the entry to the bus name). The launcher profile (`work` / `personal`)
@@ -136,6 +136,9 @@ still works as a fallback while it matches exactly one session:
   interrupt Claude Code offers). Implemented as keyboard injection: the broker spawns
   `sendkeys.ps1`, which focuses the recorded window, sends Esc, and restores focus.
   Cost: focus flicks away for ~0.3s.
+- `/compact <session>` — type `/compact` + Enter in that session's input box (same
+  injection path as `/stop`). Lands in whatever the input box holds — if you're
+  mid-typing in that window, the text mixes.
 - `/usage <session>` — token totals (today / all time) computed by reading that session's
   fake-home transcripts (`.claude\projects\**\*.jsonl`). No injection at all.
 

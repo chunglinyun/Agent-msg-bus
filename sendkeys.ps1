@@ -5,7 +5,10 @@
 # one HWND — run each split session in its own window for reliable targeting.
 param(
     [Parameter(Mandatory = $true)][long]$Hwnd,
-    [Parameter(Mandatory = $true)][string]$Keys
+    [Parameter(Mandatory = $true)][string]$Keys,
+    # Send {ENTER} after a pause: typing "/xxx" opens Claude Code's slash menu and
+    # Enter picks the highlighted candidate — the pause lets the filtering settle.
+    [switch]$Enter
 )
 
 $sig = @'
@@ -52,7 +55,9 @@ if (-not (Focus-Window $target)) {
     exit 1
 }
 Start-Sleep -Milliseconds 50
-(New-Object -ComObject WScript.Shell).SendKeys($Keys)
+$shell = New-Object -ComObject WScript.Shell
+$shell.SendKeys($Keys)
+if ($Enter) { Start-Sleep -Milliseconds 200; $shell.SendKeys('{ENTER}') }
 Start-Sleep -Milliseconds 100
 
 # Restore focus; failure here is cosmetic (focus stays on the target), don't error.

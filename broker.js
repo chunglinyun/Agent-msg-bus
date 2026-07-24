@@ -146,7 +146,15 @@ function logMsg(msg, extra = '') {
 // /stop injects Esc into the target session's terminal window (the only external
 // interrupt Claude Code has); /usage aggregates token counts straight from the
 // target's local transcripts. Neither goes through the bus or the agent's model.
-const SPLIT_BASE = path.join(process.env.USERPROFILE || process.env.HOME || '', '.claude-split');
+// USERPROFILE may be a fake home when the broker is launched from inside a split
+// session — strip the fake-home suffix to get the real home (same trick as the
+// PS profile), then honor the config file's base when present.
+const REAL_HOME = (process.env.USERPROFILE || process.env.HOME || '').replace(/[\\/]\.claude-split[\\/].*$/, '');
+let SPLIT_BASE = path.join(REAL_HOME, '.claude-split');
+try {
+  const cfg = JSON.parse(fs.readFileSync(path.join(REAL_HOME, '.claude-msgbus.json'), 'utf8').replace(/^﻿/, ''));
+  if (cfg.base) SPLIT_BASE = cfg.base;
+} catch (_) { /* no config yet — the derived default stands */ }
 
 function readSessions() {
   try {
@@ -169,22 +177,37 @@ function findSession(target) {
   return {};
 }
 
-// /stop <session>: look up the window in sessions.json (written by the split
-// launcher; msg.js rewrites the entry's name to the bus name on join) and spawn
-// sendkeys.ps1 to press Esc in it.
-function stopSession(target) {
+// Shared plumbing for the key-injection commands: look up the window in
+// sessions.json (written by the split launcher; msg.js rewrites the entry's name
+// to the bus name on join), spawn sendkeys.ps1 to press keys in it, then call
+// onOk(session) so each command can do its own logging/cleanup.
+function injectKeys(cmd, target, keys, enter, onOk) {
   const { s, ambiguous } = findSession(target);
-  if (ambiguous) return log(`/stop: ${ambiguous.length} "${target}" sessions (${ambiguous.map((x) => `${x.name} pid:${x.pid}`).join(', ')}) — have each agent join the bus, then target its bus name`);
-  if (!s) return log(`/stop: no registered session "${target}" — launch it via its split launcher (e.g. claude-work) first`);
+  if (ambiguous) return log(`/${cmd}: ${ambiguous.length} "${target}" sessions (${ambiguous.map((x) => `${x.name} pid:${x.pid}`).join(', ')}) — have each agent join the bus, then target its bus name`);
+  if (!s) return log(`/${cmd}: no registered session "${target}" — launch it via its split launcher (e.g. claude-work) first`);
   const helper = path.join(__dirname, 'sendkeys.ps1');
-  execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helper, '-Hwnd', String(s.hwnd), '-Keys', '{ESC}'],
-    (err, _out, serr) => {
-      if (err) return log(`/stop ${target} failed: ${String(serr || err.message).trim()}`);
-      // Esc aborts the agent's turn: it will neither reply nor re-enter recv (the
-      // two events that clear the indicator), so clear it here.
-      setThinking(s.name, false);
-      log(`⏹ Esc sent to ${target}`);
-    });
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helper, '-Hwnd', String(s.hwnd), '-Keys', keys];
+  if (enter) args.push('-Enter');
+  execFile('powershell', args, (err, _out, serr) => {
+    if (err) return log(`/${cmd} ${target} failed: ${String(serr || err.message).trim()}`);
+    onOk(s);
+  });
+}
+
+// /stop <session>: press Esc — the only external interrupt Claude Code offers.
+function stopSession(target) {
+  injectKeys('stop', target, '{ESC}', false, (s) => {
+    // Esc aborts the agent's turn: it will neither reply nor re-enter recv (the
+    // two events that clear the indicator), so clear it here.
+    setThinking(s.name, false);
+    log(`⏹ Esc sent to ${target}`);
+  });
+}
+
+// /compact <session>: type "/compact" + Enter in the target's input box. Lands in
+// whatever the box holds — if someone is mid-typing there, the text mixes.
+function compactSession(target) {
+  injectKeys('compact', target, '/compact', true, () => log(`✂ /compact sent to ${target}`));
 }
 
 // /usage <session>: sum token usage from the fake home's transcripts
@@ -355,7 +378,7 @@ server.listen(PORT, HOST, () => {
     `\x1b[1m✻ claude-msg broker\x1b[0m`,
     ``,
     `\x1b[90mlistening on\x1b[0m ${HOST}:${PORT}`,
-    `\x1b[90m<member> <msg>\x1b[0m send  \x1b[90m·\x1b[0m  \x1b[90mall <msg>\x1b[0m broadcast  \x1b[90m·\x1b[0m  \x1b[90m/who /stop /usage\x1b[0m`,
+    `\x1b[90m<member> <msg>\x1b[0m send  \x1b[90m·\x1b[0m  \x1b[90mall <msg>\x1b[0m broadcast  \x1b[90m·\x1b[0m  \x1b[90m/who /stop /compact /usage\x1b[0m`,
     `\x1b[90mCtrl+C to quit\x1b[0m`,
   ]);
 
@@ -400,14 +423,14 @@ server.listen(PORT, HOST, () => {
   // Tab completion: first field = recipient/command; /stop and /usage also
   // complete their target from the session registry (bus names + profiles).
   const completer = (line) => {
-    const tm = line.match(/^\/(stop|usage)\s+(\S*)$/);
+    const tm = line.match(/^\/(stop|usage|compact)\s+(\S*)$/);
     if (tm) {
       const cands = [...new Set(readSessions().flatMap((x) => [x.name, x.profile]))].filter(Boolean);
       const hits = cands.filter((c) => c.startsWith(tm[2]));
       return [hits.length ? hits : cands, tm[2]];
     }
     if (line.includes(' ')) return [[], line]; // already typing the body, don't complete
-    const cands = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN).concat('all', '/who', '/stop', '/usage');
+    const cands = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN).concat('all', '/who', '/stop', '/compact', '/usage');
     const hits = cands.filter((c) => c.startsWith(line));
     return [hits.length ? hits : cands, line];
   };
@@ -427,16 +450,19 @@ server.listen(PORT, HOST, () => {
       log(names.length ? names.map((n) => `${cname(n)}(queue:${getQueue(n).length})`).join('  ') : '(nobody online)');
       return rl.prompt();
     }
-    // Native commands for split sessions: /stop = Esc injection, /usage = transcript stats.
+    // Native commands for split sessions: /stop = Esc injection, /compact = typed
+    // slash-command injection, /usage = transcript stats.
     // Targets are bus names (msg.js rewrites the registry on join); launcher
     // profiles (work/personal) still work as a fallback when unambiguous.
-    const cm = line.match(/^\/(stop|usage)\s+(\S+)$/);
+    const cm = line.match(/^\/(stop|usage|compact)\s+(\S+)$/);
     if (cm) {
-      if (cm[1] === 'stop') stopSession(cm[2]); else log(usageReport(cm[2]));
+      if (cm[1] === 'stop') stopSession(cm[2]);
+      else if (cm[1] === 'compact') compactSession(cm[2]);
+      else log(usageReport(cm[2]));
       return rl.prompt();
     }
     if (line.startsWith('/')) {
-      log('commands: /who · /stop <session> · /usage <session>   (session = bus name, or launcher profile like work when unambiguous)');
+      log('commands: /who · /stop <session> · /compact <session> · /usage <session>   (session = bus name, or launcher profile like work when unambiguous)');
       return rl.prompt();
     }
     const sp = line.indexOf(' ');
