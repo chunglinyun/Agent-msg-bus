@@ -164,16 +164,17 @@ function readSessions() {
   } catch (_) { return []; /* missing/corrupt file = nobody registered */ }
 }
 
-// Resolve a /stop//usage target: bus name first (unique — the broker rejects join
-// clashes), launcher profile (work/personal) as fallback. Profile is ambiguous
-// only when several sessions of one launcher haven't joined the bus yet.
+// Resolve a /stop//usage target: bus name first, launcher profile (work/personal)
+// as fallback. Names can collide too — un-joined sessions carry the profile as a
+// placeholder name, and roster uniqueness (memory, TTL) doesn't outlive broker
+// restarts the way sessions.json does — so both lookups treat >1 hit as ambiguous.
 function findSession(target) {
   const sessions = readSessions();
-  const byName = sessions.find((x) => x.name === target);
-  if (byName) return { s: byName };
-  const byProfile = sessions.filter((x) => x.profile === target);
-  if (byProfile.length === 1) return { s: byProfile[0] };
-  if (byProfile.length > 1) return { ambiguous: byProfile };
+  for (const field of ['name', 'profile']) {
+    const hits = sessions.filter((x) => x[field] === target);
+    if (hits.length === 1) return { s: hits[0] };
+    if (hits.length > 1) return { ambiguous: hits };
+  }
   return {};
 }
 
