@@ -13,6 +13,9 @@
 
 const net = require('net');
 const readline = require('readline');
+const fs = require('fs');
+const path = require('path');
+const { execFile } = require('child_process');
 
 const HOST = '127.0.0.1'; // loopback only, unreachable from outside
 const PORT = process.env.CLAUDE_MSG_PORT ? Number(process.env.CLAUDE_MSG_PORT) : 8787;
@@ -137,6 +140,64 @@ function logMsg(msg, extra = '') {
   const body = airy(msg.text);
   const text = msg.to === HUMAN || msg.to === 'all' ? `\x1b[97m${body}\x1b[0m` : body;
   log(`${msg.to === HUMAN ? '\x1b[1;93m★\x1b[0m ' : ''}${arrow}: ${text}${extra}`);
+}
+
+// --- Chat-mode native commands for split sessions (zero token, Windows only) ---
+// /stop injects Esc into the target session's terminal window (the only external
+// interrupt Claude Code has); /usage aggregates token counts straight from the
+// target's local transcripts. Neither goes through the bus or the agent's model.
+const SPLIT_BASE = path.join(process.env.USERPROFILE || process.env.HOME || '', '.claude-split');
+
+// /stop <work|personal>: look up the window in sessions.json (written by the
+// split launcher) and spawn sendkeys.ps1 to press Esc in it.
+function stopSession(target) {
+  let sessions = [];
+  try {
+    // strip the BOM Set-Content -Encoding UTF8 writes on PS 5.1
+    sessions = JSON.parse(fs.readFileSync(path.join(SPLIT_BASE, 'sessions.json'), 'utf8').replace(/^﻿/, ''));
+  } catch (_) { /* missing/corrupt file = nobody registered */ }
+  const s = (Array.isArray(sessions) ? sessions : [sessions]).find((x) => x && x.name === target);
+  if (!s) return log(`/stop: no registered session "${target}" — launch it via its split launcher (e.g. claude-work) first`);
+  const helper = path.join(__dirname, 'sendkeys.ps1');
+  execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helper, '-Hwnd', String(s.hwnd), '-Keys', '{ESC}'],
+    (err, _out, serr) => log(err ? `/stop ${target} failed: ${String(serr || err.message).trim()}` : `⏹ Esc sent to ${target}`));
+}
+
+// /usage <work|personal>: sum token usage from the fake home's transcripts
+// (~\.claude-split\.claude-<target>\.claude\projects\**\*.jsonl), ccusage-style.
+// ponytail: re-reads every transcript per call; cache mtimes if it ever feels slow
+function* jsonlFiles(dir) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) yield* jsonlFiles(p);
+    else if (e.name.endsWith('.jsonl')) yield p;
+  }
+}
+
+function usageReport(target) {
+  const root = path.join(SPLIT_BASE, `.claude-${target}`, '.claude', 'projects');
+  if (!fs.existsSync(root)) return `/usage: no transcripts for "${target}" (${root})`;
+  const seen = new Map(); // message.id -> latest {usage, ts}; dedupes streamed rewrites
+  for (const f of jsonlFiles(root)) {
+    for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
+      if (!line.includes('"usage"')) continue;
+      let o; try { o = JSON.parse(line); } catch (_) { continue; }
+      const u = o.message && o.message.usage;
+      if (!u || !o.message.id) continue;
+      seen.set(o.message.id, { u, ts: Date.parse(o.timestamp) || 0 });
+    }
+  }
+  const midnight = new Date().setHours(0, 0, 0, 0);
+  const all = { in: 0, out: 0, cr: 0, cw: 0 }, today = { in: 0, out: 0, cr: 0, cw: 0 };
+  for (const { u, ts } of seen.values()) {
+    for (const t of ts >= midnight ? [all, today] : [all]) {
+      t.in += u.input_tokens || 0; t.out += u.output_tokens || 0;
+      t.cr += u.cache_read_input_tokens || 0; t.cw += u.cache_creation_input_tokens || 0;
+    }
+  }
+  const k = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+  const fmt = (t) => `in ${k(t.in)} · out ${k(t.out)} · cache r/w ${k(t.cr)}/${k(t.cw)}`;
+  return `${cname(target)} usage — today: ${fmt(today)}\n${' '.repeat(dispWidth(target) + 8)}all time: ${fmt(all)} (${seen.size} turns)`;
 }
 
 function handle(req, socket) {
@@ -265,7 +326,7 @@ server.listen(PORT, HOST, () => {
     `\x1b[1m✻ claude-msg broker\x1b[0m`,
     ``,
     `\x1b[90mlistening on\x1b[0m ${HOST}:${PORT}`,
-    `\x1b[90m<member> <msg>\x1b[0m send  \x1b[90m·\x1b[0m  \x1b[90mall <msg>\x1b[0m broadcast  \x1b[90m·\x1b[0m  \x1b[90m/who\x1b[0m list online`,
+    `\x1b[90m<member> <msg>\x1b[0m send  \x1b[90m·\x1b[0m  \x1b[90mall <msg>\x1b[0m broadcast  \x1b[90m·\x1b[0m  \x1b[90m/who /stop /usage\x1b[0m`,
     `\x1b[90mCtrl+C to quit\x1b[0m`,
   ]);
 
@@ -310,7 +371,7 @@ server.listen(PORT, HOST, () => {
   // Tab completion: first field only (the recipient); candidates = online members + all + /who
   const completer = (line) => {
     if (line.includes(' ')) return [[], line]; // already typing the body, don't complete
-    const cands = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN).concat('all', '/who');
+    const cands = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN).concat('all', '/who', '/stop', '/usage');
     const hits = cands.filter((c) => c.startsWith(line));
     return [hits.length ? hits : cands, line];
   };
@@ -328,6 +389,17 @@ server.listen(PORT, HOST, () => {
     if (line === '/who') {
       const names = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN);
       log(names.length ? names.map((n) => `${cname(n)}(queue:${getQueue(n).length})`).join('  ') : '(nobody online)');
+      return rl.prompt();
+    }
+    // Native commands for split sessions: /stop = Esc injection, /usage = transcript stats.
+    // Targets are launcher identities (work/personal), not bus names.
+    const cm = line.match(/^\/(stop|usage)\s+(\S+)$/);
+    if (cm) {
+      if (cm[1] === 'stop') stopSession(cm[2]); else log(usageReport(cm[2]));
+      return rl.prompt();
+    }
+    if (line.startsWith('/')) {
+      log('commands: /who · /stop <profile> · /usage <profile>   (profile = split launcher name, e.g. work)');
       return rl.prompt();
     }
     const sp = line.indexOf(' ');

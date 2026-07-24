@@ -1,6 +1,6 @@
 # 從 chat 視窗觸發 agent 原生指令（零 token）規劃
 
-狀態：**規劃中，待使用者決定後才實作**。
+狀態：**已實作（2026-07-24）**。定案：`/usage` 走讀檔（零注入）；`/stop <target>` 走 Esc 鍵盤注入（查證過 Claude Code 沒有任何外部 abort API，Ctrl+C 會殺掉程序，Esc 是唯一優雅中斷）；通用 `/key`、`/esc` 不做（YAGNI，需要時再加）。注入的實機驗證待桌面解鎖後進行（實作當下螢幕鎖定，前景切換必然失敗）。
 相關計畫：合作式中斷獨立成 `docs/msg-interrupt-plan.md`；本計畫的 Esc 注入若實測可行，對 split session 是更即時的中斷手段。
 
 ## Context
@@ -26,11 +26,11 @@
 
 如果目的只是看用量（不是通用指令），有更乾淨的零 token 路：直接讀本機 transcript（`~\.claude\projects\**\*.jsonl` 有每回合 token 數，ccusage 就是這樣做的），chat 加 `/usage <target>` 在 broker 端自己算，零注入、零焦點閃爍。但只涵蓋「可從本地資料推導」的資訊，觸發不了任意原生指令。
 
-## 待決問題（使用者決定後定案）
+## 待決問題（已定案 2026-07-24）
 
-1. 接不接受焦點閃離 0.2 秒？不接受的話 Windows 上沒有可靠的免焦點注入，本計畫只剩讀檔替代路。
-2. 需求清單裡到底有哪些指令？若只有 /usage 一種查詢，建議直接走讀檔，不做注入。
-3. 目標定址用 work/personal 夠不夠（= 只管 split session）？
+1. 焦點閃離：接受（/stop 用注入）。實作上 SetForegroundWindow 受前景鎖限制，helper 以「讀回實際前景」驗證，失敗時 fallback `SwitchToThisWindow`。
+2. 指令清單：`/usage`（讀檔）＋`/stop`（Esc 注入）。通用 `/key` 不做。
+3. 定址用 work/personal：夠（sessions.json 記 name/pid/hwnd，hwnd 取 launcher 啟動當下的前景視窗）。
 
 ## 實作步驟（待定案後）
 

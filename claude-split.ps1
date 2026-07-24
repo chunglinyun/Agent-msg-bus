@@ -36,7 +36,7 @@ function Get-MsgBusConfig {
 function Install-ClaudeSplit {
     param([Parameter(Mandatory=$true)][string]$SourceDir)
     New-Item -ItemType Directory -Force -Path $Global:ClaudeSplitBin | Out-Null
-    foreach ($f in @("broker.js", "msg.js", "msg.cmd")) {
+    foreach ($f in @("broker.js", "msg.js", "msg.cmd", "sendkeys.ps1")) {
         Copy-Item (Join-Path $SourceDir $f) (Join-Path $Global:ClaudeSplitBin $f) -Force
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $Global:ClaudeSplitBase ".claude-work")     | Out-Null
@@ -119,6 +119,37 @@ function msg {
     node (Join-Path $Global:ClaudeSplitBin "msg.js") @MsgArgs
 }
 
+# --- Session registry: lets broker chat commands (/stop) address the window ----
+# sessions.json entries: { name, pid, hwnd, startedAt }. The HWND is whatever
+# window is foreground when the launcher runs — i.e. the window you typed
+# claude-work into. Windows Terminal tabs share one HWND, so for reliable
+# /stop targeting run each split session in its own window.
+function Register-ClaudeSplitSession {
+    param([string]$MsgName)
+    if (-not ('ClaudeSplit.Native' -as [type])) {
+        Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();' -Name Native -Namespace ClaudeSplit
+    }
+    $hwnd = [long][ClaudeSplit.Native]::GetForegroundWindow()
+    $file = Join-Path $Global:ClaudeSplitBase "sessions.json"
+    $sessions = @()
+    # PS 5.1: ConvertFrom-Json emits a JSON array as ONE pipeline item; assign to a
+    # variable first, then pipe, so it enumerates instead of nesting.
+    if (Test-Path $file) { try { $parsed = Get-Content $file -Raw | ConvertFrom-Json; $sessions = @($parsed | Where-Object { $_ -and $_.name -ne $MsgName }) } catch {} }
+    $sessions += [pscustomobject]@{ name = $MsgName; pid = $PID; hwnd = $hwnd; startedAt = (Get-Date -Format o) }
+    ConvertTo-Json -InputObject $sessions | Set-Content -Path $file -Encoding UTF8
+}
+
+function Unregister-ClaudeSplitSession {
+    param([string]$MsgName)
+    $file = Join-Path $Global:ClaudeSplitBase "sessions.json"
+    if (-not (Test-Path $file)) { return }
+    try {
+        $parsed = Get-Content $file -Raw | ConvertFrom-Json
+        $sessions = @($parsed | Where-Object { $_ -and $_.name -ne $MsgName })
+        ConvertTo-Json -InputObject $sessions | Set-Content -Path $file -Encoding UTF8
+    } catch {}
+}
+
 # --- Core launcher: fake the home + set the identity + inject paths --
 function Invoke-ClaudeWithProfile {
     param(
@@ -129,6 +160,7 @@ function Invoke-ClaudeWithProfile {
     $targetPath = Join-Path $Global:ClaudeSplitBase $ProfileName
     $profileBin = Join-Path $targetPath ".local\bin"
     New-Item -ItemType Directory -Path $profileBin -Force | Out-Null
+    Register-ClaudeSplitSession -MsgName $MsgName
 
     $oldUserProfile = $env:USERPROFILE
     $oldPath        = $env:PATH
@@ -151,6 +183,7 @@ function Invoke-ClaudeWithProfile {
         $env:CLAUDE_MSG_NAME = $oldMsgName
         $env:CLAUDE_MSG_PORT = $oldMsgPort
         $env:CLAUDE_MSG      = $oldMsg
+        Unregister-ClaudeSplitSession -MsgName $MsgName
     }
 }
 
