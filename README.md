@@ -36,6 +36,10 @@ This installs the skill (SKILL.md + msg.js + broker.js) into `~\.claude\skills\c
 self-contained — every Claude Code session of yours can join the platform from then on.
 Without PowerShell, copy those three files there by hand; same result.
 
+Installing writes `~\.claude-msgbus.json` (install mode, clone dir, base dir, broker path).
+The script reads its paths from it — so shells opened inside a split session still resolve
+the real locations — and re-installs can omit `-SourceDir` (the recorded clone dir is reused).
+
 Other agent providers: paste the contents of `AGENTS-template.md` into that agent's
 instruction file (AGENTS.md / GEMINI.md) and point the path at any copy of msg.js.
 
@@ -123,20 +127,22 @@ with a fixed name — no join, no `--as`. They can still exchange messages with 
 ## Chat-window native commands (split only, zero token)
 
 When the broker runs in the foreground (chat mode), two commands act on split sessions
-directly — no message, no model turn, no tokens. `<profile>` is the launcher's MsgName
-(`work` / `personal` by default, or whatever you named your own profiles):
+directly — no message, no model turn, no tokens. `<session>` is the agent's bus name
+(Tab-completes; the launcher registers the session in `~\.claude-split\sessions.json` and
+`msg join` rewrites the entry to the bus name). The launcher profile (`work` / `personal`)
+still works as a fallback while it matches exactly one session:
 
-- `/stop <profile>` — press Esc in that session's terminal window (the only external
-  interrupt Claude Code offers). Implemented as keyboard injection: the launcher records the
-  window in `~\.claude-split\sessions.json`, the broker spawns `sendkeys.ps1`, which focuses
-  the window, sends Esc, and restores focus. Cost: focus flicks away for ~0.3s.
-- `/usage <profile>` — token totals (today / all time) computed by reading that fake
-  home's transcripts (`.claude\projects\**\*.jsonl`). No injection at all.
+- `/stop <session>` — press Esc in that session's terminal window (the only external
+  interrupt Claude Code offers). Implemented as keyboard injection: the broker spawns
+  `sendkeys.ps1`, which focuses the recorded window, sends Esc, and restores focus.
+  Cost: focus flicks away for ~0.3s.
+- `/usage <session>` — token totals (today / all time) computed by reading that session's
+  fake-home transcripts (`.claude\projects\**\*.jsonl`). No injection at all.
 
-Caveats: targets are launcher profile names, not bus names (they usually coincide, but a
-session that joined the bus some other way isn't addressable). Windows Terminal tabs share
-one window handle — run each split session in its own window for reliable `/stop`. `/stop`
-fails (with a clear error) while the desktop is locked.
+Caveats: only sessions started by a split launcher are addressable (agents that joined the
+bus some other way have no registered window). Windows Terminal tabs share one window
+handle — run each split session in its own window for reliable `/stop`. `/stop` fails
+(with a clear error) while the desktop is locked.
 
 `askpeer.js` (with `ask-peer-skill/`) is split-only synchronous delegation: it opens a one-shot
 `claude -p` under the peer's fake home for a single question and answer. Use the message platform

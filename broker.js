@@ -148,23 +148,43 @@ function logMsg(msg, extra = '') {
 // target's local transcripts. Neither goes through the bus or the agent's model.
 const SPLIT_BASE = path.join(process.env.USERPROFILE || process.env.HOME || '', '.claude-split');
 
-// /stop <work|personal>: look up the window in sessions.json (written by the
-// split launcher) and spawn sendkeys.ps1 to press Esc in it.
-function stopSession(target) {
-  let sessions = [];
+function readSessions() {
   try {
     // strip the BOM Set-Content -Encoding UTF8 writes on PS 5.1
-    sessions = JSON.parse(fs.readFileSync(path.join(SPLIT_BASE, 'sessions.json'), 'utf8').replace(/^﻿/, ''));
-  } catch (_) { /* missing/corrupt file = nobody registered */ }
-  const s = (Array.isArray(sessions) ? sessions : [sessions]).find((x) => x && x.name === target);
+    const parsed = JSON.parse(fs.readFileSync(path.join(SPLIT_BASE, 'sessions.json'), 'utf8').replace(/^﻿/, ''));
+    return (Array.isArray(parsed) ? parsed : [parsed]).filter(Boolean);
+  } catch (_) { return []; /* missing/corrupt file = nobody registered */ }
+}
+
+// Resolve a /stop//usage target: bus name first (unique — the broker rejects join
+// clashes), launcher profile (work/personal) as fallback. Profile is ambiguous
+// only when several sessions of one launcher haven't joined the bus yet.
+function findSession(target) {
+  const sessions = readSessions();
+  const byName = sessions.find((x) => x.name === target);
+  if (byName) return { s: byName };
+  const byProfile = sessions.filter((x) => x.profile === target);
+  if (byProfile.length === 1) return { s: byProfile[0] };
+  if (byProfile.length > 1) return { ambiguous: byProfile };
+  return {};
+}
+
+// /stop <session>: look up the window in sessions.json (written by the split
+// launcher; msg.js rewrites the entry's name to the bus name on join) and spawn
+// sendkeys.ps1 to press Esc in it.
+function stopSession(target) {
+  const { s, ambiguous } = findSession(target);
+  if (ambiguous) return log(`/stop: ${ambiguous.length} "${target}" sessions (${ambiguous.map((x) => `${x.name} pid:${x.pid}`).join(', ')}) — have each agent join the bus, then target its bus name`);
   if (!s) return log(`/stop: no registered session "${target}" — launch it via its split launcher (e.g. claude-work) first`);
   const helper = path.join(__dirname, 'sendkeys.ps1');
   execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helper, '-Hwnd', String(s.hwnd), '-Keys', '{ESC}'],
     (err, _out, serr) => log(err ? `/stop ${target} failed: ${String(serr || err.message).trim()}` : `⏹ Esc sent to ${target}`));
 }
 
-// /usage <work|personal>: sum token usage from the fake home's transcripts
-// (~\.claude-split\.claude-<target>\.claude\projects\**\*.jsonl), ccusage-style.
+// /usage <session>: sum token usage from the fake home's transcripts
+// (~\.claude-split\.claude-<profile>\.claude\projects\**\*.jsonl), ccusage-style.
+// Accepts a bus name or a profile; sessions of one profile share a fake home, so
+// profile ambiguity doesn't matter here.
 // ponytail: re-reads every transcript per call; cache mtimes if it ever feels slow
 function* jsonlFiles(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -175,7 +195,10 @@ function* jsonlFiles(dir) {
 }
 
 function usageReport(target) {
-  const root = path.join(SPLIT_BASE, `.claude-${target}`, '.claude', 'projects');
+  const { s } = findSession(target);
+  // no registry hit = treat the target as a profile directly (pre-registry habit)
+  const profile = (s && (s.profile || s.name)) || target;
+  const root = path.join(SPLIT_BASE, `.claude-${profile}`, '.claude', 'projects');
   if (!fs.existsSync(root)) return `/usage: no transcripts for "${target}" (${root})`;
   const seen = new Map(); // message.id -> latest {usage, ts}; dedupes streamed rewrites
   for (const f of jsonlFiles(root)) {
@@ -368,8 +391,15 @@ server.listen(PORT, HOST, () => {
   process.stdout.on('resize', () => { anchorInput(); rl.prompt(true); });
   process.on('exit', () => process.stdout.write('\x1b[r')); // release the region or the shell stays confined
   process.stdout.write('\x1b]0;claude-msg chat\x07'); // window title
-  // Tab completion: first field only (the recipient); candidates = online members + all + /who
+  // Tab completion: first field = recipient/command; /stop and /usage also
+  // complete their target from the session registry (bus names + profiles).
   const completer = (line) => {
+    const tm = line.match(/^\/(stop|usage)\s+(\S*)$/);
+    if (tm) {
+      const cands = [...new Set(readSessions().flatMap((x) => [x.name, x.profile]))].filter(Boolean);
+      const hits = cands.filter((c) => c.startsWith(tm[2]));
+      return [hits.length ? hits : cands, tm[2]];
+    }
     if (line.includes(' ')) return [[], line]; // already typing the body, don't complete
     const cands = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN).concat('all', '/who', '/stop', '/usage');
     const hits = cands.filter((c) => c.startsWith(line));
@@ -392,14 +422,15 @@ server.listen(PORT, HOST, () => {
       return rl.prompt();
     }
     // Native commands for split sessions: /stop = Esc injection, /usage = transcript stats.
-    // Targets are launcher identities (work/personal), not bus names.
+    // Targets are bus names (msg.js rewrites the registry on join); launcher
+    // profiles (work/personal) still work as a fallback when unambiguous.
     const cm = line.match(/^\/(stop|usage)\s+(\S+)$/);
     if (cm) {
       if (cm[1] === 'stop') stopSession(cm[2]); else log(usageReport(cm[2]));
       return rl.prompt();
     }
     if (line.startsWith('/')) {
-      log('commands: /who · /stop <profile> · /usage <profile>   (profile = split launcher name, e.g. work)');
+      log('commands: /who · /stop <session> · /usage <session>   (session = bus name, or launcher profile like work when unambiguous)');
       return rl.prompt();
     }
     const sp = line.indexOf(' ');
