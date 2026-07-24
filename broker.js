@@ -63,6 +63,17 @@ const waiters = new Map(); // name -> [{ socket, timer }, ...]
 const roster = new Map();  // name -> lastSeen (ms). ponytail: no leave/prune, filtering with alive() on read is enough
 const STALE_MS = Number(process.env.CLAUDE_MSG_STALE_MS || 10 * 60 * 1000);
 
+// Chat-mode "thinking" indicator: a member is thinking from the moment it picks up
+// a message until it sends something or goes back to waiting in recv. No ack
+// protocol needed — pickup and re-wait are visible to the broker anyway.
+const thinking = new Map(); // name -> since (ms)
+let syncSpinner = () => {}; // bound in chat mode; stays a no-op in background mode
+function setThinking(name, on) {
+  if (!chatMode || !name || name === HUMAN) return;
+  if (on) thinking.set(name, Date.now()); else thinking.delete(name);
+  syncSpinner();
+}
+
 function touch(name) { if (name && name !== '?') roster.set(name, Date.now()); }
 function alive(name) { return (Date.now() - (roster.get(name) || 0)) < STALE_MS; }
 
@@ -86,6 +97,7 @@ function deliverToWaiter(name, msg) {
     const w = list.shift();
     clearTimeout(w.timer);
     respond(w.socket, { ok: true, messages: [msg] });
+    setThinking(name, true); // it just picked up work
     return true;
   }
   return false;
@@ -133,6 +145,7 @@ function handle(req, socket) {
   if (cmd === 'send') {
     if (!req.to) return respond(socket, { ok: false, error: 'missing "to"' });
     touch(req.from);
+    setThinking(req.from, false); // replying = done thinking
     if (req.to === 'all') {
       // Broadcast: every roster member still alive (excluding the sender). Stale
       // members are skipped so we don't stuff a dead session's queue.
@@ -177,8 +190,10 @@ function handle(req, socket) {
     const q = getQueue(name);
     if (q.length) {
       const messages = q.splice(0, q.length);
+      setThinking(name, true); // it just picked up work
       return respond(socket, { ok: true, messages });
     }
+    setThinking(name, false); // nothing to do = back to standby
     const wait = Number(req.wait || 0);
     if (wait > 0) {
       // Blocking: hold the connection until a send arrives or the wait expires
@@ -201,6 +216,7 @@ function handle(req, socket) {
           // of letting it linger in the roster for the whole TTL; any later command
           // from a live session re-touches it back online.
           roster.delete(name);
+          setThinking(name, false);
           log(`${cname(name)} disconnected, marked offline`);
         }
       });
@@ -256,11 +272,35 @@ server.listen(PORT, HOST, () => {
   // --- chat mode: this window is the human's chat window ---
   // DECSTBM scroll region: rows 1..N-1 scroll with messages, the last row is the
   // pinned input line (DECSTBM homes the cursor, so re-place it explicitly).
-  const anchorInput = () => {
+  // The separator row doubles as the status line: while members are thinking it
+  // shows an animated "✻ name thinking…", otherwise a plain rule.
+  const SPIN = ['·', '✢', '✳', '✶', '✻', '✽'];
+  let spinT = 0, spinTimer = null;
+  const drawStatus = () => {
     const rows = process.stdout.rows || 24;
     const cols = process.stdout.columns || 80;
+    let line;
+    if (!thinking.size) {
+      line = `\x1b[38;5;208m${'─'.repeat(cols)}\x1b[0m`;
+    } else {
+      const g = SPIN[spinT++ % SPIN.length];
+      const label = ` \x1b[38;5;208m${g}\x1b[0m ${[...thinking.keys()].map(cname).join(', ')} \x1b[38;5;208mthinking…\x1b[0m `;
+      const fill = Math.max(0, cols - 2 - dispWidth(label));
+      line = `\x1b[38;5;208m──\x1b[0m${label}\x1b[38;5;208m${'─'.repeat(fill)}\x1b[0m`;
+    }
+    process.stdout.write(`\x1b7\x1b[${rows - 1};1H\x1b[2K${line}\x1b8`);
+  };
+  syncSpinner = () => {
+    // ponytail: STALE_MS cap so a member that dies mid-work can't spin forever
+    for (const [n, ts] of thinking) if (Date.now() - ts > STALE_MS) thinking.delete(n);
+    if (thinking.size && !spinTimer) spinTimer = setInterval(syncSpinner, 120);
+    if (!thinking.size && spinTimer) { clearInterval(spinTimer); spinTimer = null; }
+    drawStatus();
+  };
+  const anchorInput = () => {
+    const rows = process.stdout.rows || 24;
     process.stdout.write(`\x1b[1;${rows - 2}r`); // messages scroll above the separator
-    process.stdout.write(`\x1b[${rows - 1};1H\x1b[2K\x1b[38;5;208m${'─'.repeat(cols)}\x1b[0m`);
+    drawStatus();
     process.stdout.write(`\x1b[${rows};1H`);
   };
   anchorInput();
