@@ -178,7 +178,13 @@ function stopSession(target) {
   if (!s) return log(`/stop: no registered session "${target}" — launch it via its split launcher (e.g. claude-work) first`);
   const helper = path.join(__dirname, 'sendkeys.ps1');
   execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helper, '-Hwnd', String(s.hwnd), '-Keys', '{ESC}'],
-    (err, _out, serr) => log(err ? `/stop ${target} failed: ${String(serr || err.message).trim()}` : `⏹ Esc sent to ${target}`));
+    (err, _out, serr) => {
+      if (err) return log(`/stop ${target} failed: ${String(serr || err.message).trim()}`);
+      // Esc aborts the agent's turn: it will neither reply nor re-enter recv (the
+      // two events that clear the indicator), so clear it here.
+      setThinking(s.name, false);
+      log(`⏹ Esc sent to ${target}`);
+    });
 }
 
 // /usage <session>: sum token usage from the fake home's transcripts
