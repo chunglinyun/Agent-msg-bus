@@ -92,13 +92,16 @@ function deliverToWaiter(name, msg) {
 }
 
 function log(s) {
-  const line = `\x1b[90m${new Date().toLocaleTimeString('en-GB')}\x1b[0m  ${s}`;
+  // Multi-line messages: CR+LF each line (a bare LF stair-steps inside the scroll
+  // region) and indent continuation lines to line up after the timestamp column.
+  const body = String(s).replace(/\r\n?/g, '\n').split('\n').join('\r\n' + ' '.repeat(10));
+  const line = `\x1b[90m${new Date().toLocaleTimeString('en-GB')}\x1b[0m  ${body}`;
   if (rl) {
-    // Clear the input line while typing, then restore it (prompt(true) keeps what was typed)
-    readline.cursorTo(process.stdout, 0);
-    readline.clearLine(process.stdout, 0);
-    console.log(line);
-    rl.prompt(true);
+    // The scroll region pins the separator + input line to the two bottom rows:
+    // save the cursor, write at the region's bottom margin (LF scrolls the
+    // region), restore. The bottom rows are never touched, no prompt redraw needed.
+    const rows = process.stdout.rows || 24;
+    process.stdout.write(`\x1b7\x1b[${rows - 2};1H\n${line}\x1b8`);
   } else console.log(line);
 }
 
@@ -110,10 +113,17 @@ function deliverOrQueue(name, msg) {
   getQueue(name).push(msg);
 }
 
+// Ambiguous-width glyphs (②③, ▲, ☆…) render wide but the terminal advances only
+// one cell, so neighbours collide; a trailing space gives them room to breathe.
+// ponytail: enclosed alphanumerics / geometric shapes / misc symbols only
+const CRAMPED = /([①-⓿■-◿☀-➿])/g;
+function airy(s) { return String(s).replace(CRAMPED, '$1 '); }
+
 function logMsg(msg, extra = '') {
   const arrow = msg.to === 'all' ? `${cname(msg.from)} ⇒ @all` : `${cname(msg.from)} → ${cname(msg.to)}`;
   // Mark messages meant for the human with ★ and brighten the body so they stand out
-  const text = msg.to === HUMAN || msg.to === 'all' ? `\x1b[97m${msg.text}\x1b[0m` : msg.text;
+  const body = airy(msg.text);
+  const text = msg.to === HUMAN || msg.to === 'all' ? `\x1b[97m${body}\x1b[0m` : body;
   log(`${msg.to === HUMAN ? '\x1b[1;93m★\x1b[0m ' : ''}${arrow}: ${text}${extra}`);
 }
 
@@ -183,7 +193,16 @@ function handle(req, socket) {
       socket.on('close', () => {
         const list = waiters.get(name) || [];
         const i = list.findIndex((w) => w.socket === socket);
-        if (i >= 0) { clearTimeout(list[i].timer); list.splice(i, 1); }
+        if (i >= 0) {
+          clearTimeout(list[i].timer); list.splice(i, 1);
+          // Socket dropped while the waiter was still registered = the client was
+          // killed mid-wait (normal timeout/delivery responds first, removing the
+          // waiter before close fires). Mark the member offline right away instead
+          // of letting it linger in the roster for the whole TTL; any later command
+          // from a live session re-touches it back online.
+          roster.delete(name);
+          log(`${cname(name)} disconnected, marked offline`);
+        }
       });
       return; // no response yet, wait for an event
     }
@@ -235,10 +254,18 @@ server.listen(PORT, HOST, () => {
   ]);
 
   // --- chat mode: this window is the human's chat window ---
-  // Pin the input line to the window bottom: pad below the banner (7 rows) so the
-  // cursor starts on the last row; every log() redraw keeps the prompt there.
-  // ponytail: no DECSTBM scroll region, padding is enough; resize not handled
-  process.stdout.write('\n'.repeat(Math.max(0, (process.stdout.rows || 24) - 8)));
+  // DECSTBM scroll region: rows 1..N-1 scroll with messages, the last row is the
+  // pinned input line (DECSTBM homes the cursor, so re-place it explicitly).
+  const anchorInput = () => {
+    const rows = process.stdout.rows || 24;
+    const cols = process.stdout.columns || 80;
+    process.stdout.write(`\x1b[1;${rows - 2}r`); // messages scroll above the separator
+    process.stdout.write(`\x1b[${rows - 1};1H\x1b[2K\x1b[38;5;208m${'─'.repeat(cols)}\x1b[0m`);
+    process.stdout.write(`\x1b[${rows};1H`);
+  };
+  anchorInput();
+  process.stdout.on('resize', () => { anchorInput(); rl.prompt(true); });
+  process.on('exit', () => process.stdout.write('\x1b[r')); // release the region or the shell stays confined
   process.stdout.write('\x1b]0;claude-msg chat\x07'); // window title
   // Tab completion: first field only (the recipient); candidates = online members + all + /who
   const completer = (line) => {
@@ -251,7 +278,7 @@ server.listen(PORT, HOST, () => {
   // readline swallows Ctrl+C (SIGINT goes to rl, not process); without taking it over node never dies
   rl.on('SIGINT', () => process.exit(0));
   rl.on('close', () => process.exit(0)); // Ctrl+D quits the same way
-  rl.setPrompt('\x1b[1;97myou\x1b[0m \x1b[38;5;208m›\x1b[0m ');
+  rl.setPrompt('    \x1b[1;97myou\x1b[0m \x1b[38;5;208m›\x1b[0m '); // indented so it never lines up under the timestamps
   touch(HUMAN);
   setInterval(() => touch(HUMAN), 60 * 1000).unref(); // window open = user is online
 
