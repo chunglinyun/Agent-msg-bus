@@ -7,18 +7,41 @@
 #          .\install.ps1 -DryRun         # show what it would do
 #          .\install.ps1 -Agent codex    # force one target
 #          .\install.ps1 -Agent other    # generic copy + instructions to paste
+#          .\install.ps1 -SkipNodeCheck  # install anyway on an old/odd Node
 # =====================================================================
 [CmdletBinding()]
 param(
     [ValidateSet('auto', 'claude', 'codex', 'gemini', 'other')]
     [string[]]$Agent = @('auto'),
     [string]$UserHome = $env:USERPROFILE,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$SkipNodeCheck
 )
 
 $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
 if (-not (Test-Path (Join-Path $src 'msg.js'))) { throw "run this script from the repo clone (msg.js not found next to it)" }
+
+# --- Node.js ---------------------------------------------------------
+# broker.js/msg.js are stdlib-only and their newest syntax is ?. / ?? (Node 14+),
+# but 18 is the floor the agent CLIs themselves require, so demand that and keep
+# one number to reason about. Everything is run as `node <file>`, so PATH is what matters.
+$minNodeMajor = 18
+if ($SkipNodeCheck) {
+    Write-Host "Skipping the Node check (-SkipNodeCheck)." -ForegroundColor Yellow
+}
+else {
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $node) {
+        throw "Node.js is not on PATH. Install Node $minNodeMajor+ (winget install OpenJS.NodeJS.LTS, or https://nodejs.org), reopen the shell, then re-run."
+    }
+    $nodeVer = & node -v          # e.g. v22.11.0
+    if ($nodeVer -notmatch '^v(\d+)\.') { throw "could not parse 'node -v' output: '$nodeVer'" }
+    if ([int]$Matches[1] -lt $minNodeMajor) {
+        throw "Node $nodeVer is too old - need $minNodeMajor or newer (or re-run with -SkipNodeCheck to install regardless)."
+    }
+    Write-Host "Node $nodeVer ($($node.Source))" -ForegroundColor DarkGray
+}
 
 # home     = agent's config dir under the user home (also the detection marker)
 # tools    = where msg.js + broker.js go

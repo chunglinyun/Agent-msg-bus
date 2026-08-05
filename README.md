@@ -32,8 +32,10 @@ cd Agent-msg-bus
 .\install.ps1            # add -DryRun first if you want to see the targets
 ```
 
-It detects which agent CLIs exist on the machine (command on PATH, or the config dir under
-`~`) and installs to each one:
+First it checks Node: `node` must be on PATH and **18 or newer** (the code itself only needs
+14, but every agent CLI wants 18+; `-SkipNodeCheck` installs regardless). Then it detects which
+agent CLIs exist on the machine (command on PATH, or the config dir under `~`) and installs to
+each one:
 
 | Detected | Gets |
 |---|---|
@@ -116,35 +118,84 @@ The moment the other side sends, you have it.
 
 # claude-split: optional isolation add-on
 
-**When you need it**: only when you run **two or more Claude Code instances side by side**
-(e.g. different accounts or subscriptions) and want their `~\.claude.json` / `~\.claude\`
-kept separate. Running a single instance, or several instances on the same account?
-Skip this whole section — `Install-MsgBus` above is all the message platform needs.
+**This is one way to run parallel sessions, not the way.** The broker doesn't know or care how a
+session was started — anything that can run `node msg.js` and `join` a unique name is a member:
+separate terminal windows or tabs, a second Windows user, WSL, an IDE-embedded session, Codex and
+Gemini side by side. The only requirements are the same machine's `127.0.0.1:8787` and distinct
+names, and `install.ps1` above already covers all of that.
+
+**Use claude-split only if you need Claude Code *config* isolation** — two or more instances on
+different accounts/subscriptions whose `~\.claude.json` and `~\.claude\` must not mix. One
+instance, or several on the same account? Skip this whole section.
+
+### Setup
 
 ```powershell
-Install-ClaudeSplit -SourceDir $repo      # $repo = your clone path, as above
+$repo = "<path where you cloned it>"
+. "$repo\claude-split.ps1"                # required first: Install-ClaudeSplit, Start-ClaudeBroker,
+                                          # claude-work/claude-personal are all functions in this file.
+                                          # Put this line in $PROFILE so they survive a new shell.
+Install-ClaudeSplit -SourceDir $repo      # on a re-install you can omit -SourceDir; the clone
+                                          # path recorded in ~\.claude-msgbus.json is reused
 ```
 
-This creates `~\.claude-split\bin\` (copies of broker.js/msg.js/msg.cmd/sendkeys.ps1) and two fake homes
-(`.claude-work` / `.claude-personal`, each with the msg-bus skill installed), and then:
+`Install-ClaudeSplit` does four things:
+
+1. creates `~\.claude-split\bin\` with copies of `broker.js`, `msg.js`, `msg.cmd`, `sendkeys.ps1`;
+2. creates the two fake homes `~\.claude-split\.claude-work\` and `...\.claude-personal\`;
+3. installs the msg-bus skill into each fake home (a session under a fake home only sees skills under that home);
+4. writes `~\.claude-msgbus.json` with `mode: "split"` — from then on `Start-ClaudeBroker` and the
+   `msg` function resolve their paths from there. (`install.ps1` deliberately never downgrades this
+   back to `mode: "skill"`.)
+
+Nothing outside `~\.claude-split\` is touched, and your real `~\.claude\` is left alone.
+
+### Running
 
 ```powershell
-Start-ClaudeBroker    # window 1: the broker
+Start-ClaudeBroker    # window 1: the broker (leave it open; close it to stop the bus)
 claude-work           # window 2: one instance (USERPROFILE points at its fake home)
 claude-personal       # window 3: the other instance
 ```
 
-`work` and `personal` are just the two **default profile names** — nothing about them is
-special, they don't have to match your use. Each profile is one line; add your own alongside
-the built-in two (and give it the skill copy):
+Give each session **its own window**, not tabs of one window: Windows Terminal tabs share a
+window handle, which the chat commands below use to target a session. The launcher restores
+`USERPROFILE`/`PATH` when the session exits, so a normal `claude` in the same window afterwards
+is unaffected.
+
+### Profiles are yours to define
+
+`work` and `personal` are just the two default profile names — nothing about them is special and
+they don't have to match your use. A profile is one function plus a skill copy in its fake home:
 
 ```powershell
 function claude-research { Invoke-ClaudeWithProfile -ProfileName ".claude-research" -MsgName "research" @args }
 Install-MsgBus -SourceDir $repo -TargetHome (Join-Path $env:USERPROFILE ".claude-split\.claude-research")
 ```
 
-The launcher injects `CLAUDE_MSG_NAME` (the profile's MsgName), so each instance is a member
-with a fixed name — no join, no `--as`. They can still exchange messages with any other member as usual.
+`-ProfileName` is the fake-home folder under `~\.claude-split\`; `-MsgName` is the identity the
+launcher injects as `CLAUDE_MSG_NAME`. Add as many as you like (define them in `$PROFILE` next to
+the `. "$repo\claude-split.ps1"` line), and use the same profile name in a second window to run
+two sessions on the same account and config.
+
+### Addressing those sessions
+
+The injected `CLAUDE_MSG_NAME` is the default identity inside that session, so its own calls need
+no `--as` and it lands on the roster as `work` / `personal` / `research` the first time it runs
+msg.js. (Before that it is not online yet: a `msg @work "..."` is accepted but answered with
+`"work" is offline, message queued`, and it arrives when the session first receives.) The skill
+then tells the agent to `join` a project-plus-task name of its own (`msgbus-refactor`), which
+becomes its bus name and rewrites its entry in `~\.claude-split\sessions.json`. So in practice:
+
+```powershell
+msg who                                   # authoritative: whatever names are actually online
+msg @msgbus-refactor "rebase onto main"   # the bus name the agent reported after joining
+msg @work "..."                           # the launcher identity, until that session joins under its own name
+msg @all "..."                            # everyone online except you
+```
+
+Between agents it is the same story — a session sends to whatever name `who` shows, regardless of
+which launcher (or no launcher) started the peer.
 
 ## Chat-window native commands (split only, zero token)
 
