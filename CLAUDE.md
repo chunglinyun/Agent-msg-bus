@@ -75,4 +75,5 @@ The full verification list (TTL reclaim, the three @all scenarios, the end-to-en
 - What runs are **copies**, not this repo, and there are two deployment locations:
   - `~\.claude\skills\claude-msg\` (the skill: SKILL.md + msg.js + broker.js) → re-run `Install-MsgBus -SourceDir <path to this repo>`; split's fake homes each hold a copy too (installed by `Install-ClaudeSplit`).
   - `~\.claude-split\bin\` (broker.js/msg.js/msg.cmd, used by `Start-ClaudeBroker` and the PowerShell `msg` function) → re-run `Install-ClaudeSplit`.
+  - Other providers, if `install.ps1` detected them: `~\.codex\claude-msg\` + `~\.codex\AGENTS.md`, `~\.gemini\claude-msg\` + `~\.gemini\GEMINI.md` (the instruction block is delimited by `<!-- claude-msg:begin/end -->` and rewritten in place) → re-run `.\install.ps1`.
 - A change to the broker protocol means also checking: `msg.js`, `msg-bus-skill/SKILL.md`, `AGENTS-template.md`, and the protocol table in the README.

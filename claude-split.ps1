@@ -114,9 +114,21 @@ function Start-ClaudeBroker {
 # Tab completion: first field completes subcommands + online members (msg raja<TAB> sends straight
 # away), second field completes member names.
 # Note that @name is splatting in PowerShell and tab-completes to a variable; use bare names.
+# Where msg.js lives: split's bin if installed, otherwise next to the broker recorded
+# in the config (skill-only installs never create the bin dir).
+function Get-ClaudeMsgCli {
+    $binCopy = Join-Path $Global:ClaudeSplitBin "msg.js"
+    if (Test-Path $binCopy) { return $binCopy }
+    $cfg = Get-MsgBusConfig
+    if ($cfg -and $cfg.broker) {
+        $alt = Join-Path (Split-Path $cfg.broker -Parent) "msg.js"
+        if (Test-Path $alt) { return $alt }
+    }
+    return $binCopy
+}
 function Get-ClaudeMsgPeers {
     try {
-        node (Join-Path $Global:ClaudeSplitBin "msg.js") who 2>$null |
+        node (Get-ClaudeMsgCli) who 2>$null |
             ForEach-Object { ($_ -split '\s+')[0] } |
             Where-Object { $_ -and $_ -notmatch '^\(' }
     } catch {}
@@ -138,7 +150,7 @@ function msg {
         })]
         $MsgArgs
     )
-    node (Join-Path $Global:ClaudeSplitBin "msg.js") @MsgArgs
+    node (Get-ClaudeMsgCli) @MsgArgs
 }
 
 # --- Session registry: lets broker chat commands (/stop) address the window ----

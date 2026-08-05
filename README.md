@@ -17,24 +17,46 @@ a shell) share one local message broker with a human user, exchanging messages v
 | `msg.cmd` | Windows wrapper so PowerShell can just run `msg ...`. |
 | `msg-bus-skill/SKILL.md` | The Claude Code skill: full instructions for an agent to pick a name, join, exchange messages, and run the listen loop. |
 | `AGENTS-template.md` | Provider-neutral template; paste into Codex's AGENTS.md or Gemini's GEMINI.md. |
+| `install.ps1` | One-shot installer: detects which agent CLIs you have (Claude Code / Codex / Gemini CLI) and installs to each. |
 | `claude-split.ps1` | PowerShell: `Install-MsgBus` installs the platform; also holds the claude-split isolation launcher (see below). |
 | `askpeer.js` + `ask-peer-skill/` | One-shot synchronous delegation, claude-split only (complements the message platform). |
 | `sendkeys.ps1` | Keyboard-injection helper for the chat window's `/stop` and `/compact` commands, claude-split only. |
 
 ## Install
 
-Clone the repo anywhere, then point the install at the clone:
+Clone the repo and run the installer from the clone:
 
 ```powershell
 git clone https://github.com/chunglinyun/Agent-msg-bus.git
-$repo = "<path where you cloned it>"      # e.g. C:\src\Agent-msg-bus
-. "$repo\claude-split.ps1"                # source it (best put in $PROFILE)
-Install-MsgBus -SourceDir $repo
+cd Agent-msg-bus
+.\install.ps1            # add -DryRun first if you want to see the targets
 ```
 
-This installs the skill (SKILL.md + msg.js + broker.js) into `~\.claude\skills\claude-msg\`,
-self-contained — every Claude Code session of yours can join the platform from then on.
-Without PowerShell, copy those three files there by hand; same result.
+It detects which agent CLIs exist on the machine (command on PATH, or the config dir under
+`~`) and installs to each one:
+
+| Detected | Gets |
+|---|---|
+| Claude Code | the skill (SKILL.md + msg.js + broker.js) in `~\.claude\skills\claude-msg\` |
+| Codex | msg.js + broker.js in `~\.codex\claude-msg\`, instructions merged into `~\.codex\AGENTS.md` |
+| Gemini CLI | msg.js + broker.js in `~\.gemini\claude-msg\`, instructions merged into `~\.gemini\GEMINI.md` |
+| nothing known | `-Agent other`: the same pair in `~\.claude-msg\` plus an `AGENTS.md` to paste anywhere |
+
+The instructions come from `AGENTS-template.md` with the real msg.js path filled in, wrapped in
+`<!-- claude-msg:begin/end -->` markers — re-running rewrites that block and leaves the rest of
+your AGENTS.md/GEMINI.md alone. Force targets with `-Agent claude,codex,gemini,other`.
+Without PowerShell, copy the files by hand; same result.
+
+`install.ps1` only copies files — the PowerShell helpers (`msg`, `Start-ClaudeBroker`,
+`claude-work`/`claude-personal`) are functions in `claude-split.ps1`, so source it to get them:
+
+```powershell
+. "$repo\claude-split.ps1"      # put this line in $PROFILE to keep them
+Start-ClaudeBroker              # reads the broker path from ~\.claude-msgbus.json
+```
+
+Or skip it entirely and run the broker directly: `node ~\.claude\skills\claude-msg\broker.js`.
+`Install-MsgBus -SourceDir $repo` from that same file still does the Claude-only install.
 
 Installing writes `~\.claude-msgbus.json` (install mode, clone dir, base dir, broker path).
 The script reads its paths from it — so shells opened inside a split session still resolve
