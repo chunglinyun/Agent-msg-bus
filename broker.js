@@ -151,9 +151,21 @@ function logMsg(msg, extra = '') {
 }
 
 // --- Chat-mode native commands for split sessions (zero token, Windows only) ---
-// /stop injects Esc into the target session's terminal window (the only external
-// interrupt Claude Code has); /usage aggregates token counts straight from the
-// target's local transcripts. Neither goes through the bus or the agent's model.
+// All of them are keyboard injection into the target session's terminal window:
+// /stop presses Esc (the only external interrupt Claude Code has), the rest type
+// the matching slash command + Enter and let that session's own UI answer. Nothing
+// goes through the bus or the agent's model.
+// This table drives dispatch, Tab completion, the banner and the help line.
+const COMMANDS = {
+  stop: '{ESC}',
+  compact: '/compact',
+  usage: '/usage',
+  model: '/model',
+  plugin: '/plugin',
+  skills: '/skills',
+};
+const CMD_NAMES = Object.keys(COMMANDS).join('|');
+
 // USERPROFILE may be a fake home when the broker is launched from inside a split
 // session — strip the fake-home suffix to get the real home (same trick as the
 // PS profile), then honor the config file's base when present.
@@ -203,62 +215,17 @@ function injectKeys(cmd, target, keys, enter, onOk) {
   });
 }
 
-// /stop <session>: press Esc — the only external interrupt Claude Code offers.
-function stopSession(target) {
-  injectKeys('stop', target, '{ESC}', false, (s) => {
+// Run one of COMMANDS against a session. Everything but /stop is typed into the
+// target's input box, so it lands in whatever that box holds — if someone is
+// mid-typing in that window, the text mixes.
+function runCommand(cmd, target) {
+  const keys = COMMANDS[cmd];
+  injectKeys(cmd, target, keys, cmd !== 'stop', (s) => {
     // Esc aborts the agent's turn: it will neither reply nor re-enter recv (the
     // two events that clear the indicator), so clear it here.
-    setThinking(s.name, false);
-    log(`⏹ Esc sent to ${target}`);
+    if (cmd === 'stop') setThinking(s.name, false);
+    log(cmd === 'stop' ? `⏹ Esc sent to ${target}` : `✂ ${keys} sent to ${target}`);
   });
-}
-
-// /compact <session>: type "/compact" + Enter in the target's input box. Lands in
-// whatever the box holds — if someone is mid-typing there, the text mixes.
-function compactSession(target) {
-  injectKeys('compact', target, '/compact', true, () => log(`✂ /compact sent to ${target}`));
-}
-
-// /usage <session>: sum token usage from the fake home's transcripts
-// (~\.claude-split\.claude-<profile>\.claude\projects\**\*.jsonl), ccusage-style.
-// Accepts a bus name or a profile; sessions of one profile share a fake home, so
-// profile ambiguity doesn't matter here.
-// ponytail: re-reads every transcript per call; cache mtimes if it ever feels slow
-function* jsonlFiles(dir) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) yield* jsonlFiles(p);
-    else if (e.name.endsWith('.jsonl')) yield p;
-  }
-}
-
-function usageReport(target) {
-  const { s } = findSession(target);
-  // no registry hit = treat the target as a profile directly (pre-registry habit)
-  const profile = (s && (s.profile || s.name)) || target;
-  const root = path.join(SPLIT_BASE, `.claude-${profile}`, '.claude', 'projects');
-  if (!fs.existsSync(root)) return `/usage: no transcripts for "${target}" (${root})`;
-  const seen = new Map(); // message.id -> latest {usage, ts}; dedupes streamed rewrites
-  for (const f of jsonlFiles(root)) {
-    for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
-      if (!line.includes('"usage"')) continue;
-      let o; try { o = JSON.parse(line); } catch (_) { continue; }
-      const u = o.message && o.message.usage;
-      if (!u || !o.message.id) continue;
-      seen.set(o.message.id, { u, ts: Date.parse(o.timestamp) || 0 });
-    }
-  }
-  const midnight = new Date().setHours(0, 0, 0, 0);
-  const all = { in: 0, out: 0, cr: 0, cw: 0 }, today = { in: 0, out: 0, cr: 0, cw: 0 };
-  for (const { u, ts } of seen.values()) {
-    for (const t of ts >= midnight ? [all, today] : [all]) {
-      t.in += u.input_tokens || 0; t.out += u.output_tokens || 0;
-      t.cr += u.cache_read_input_tokens || 0; t.cw += u.cache_creation_input_tokens || 0;
-    }
-  }
-  const k = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
-  const fmt = (t) => `in ${k(t.in)} · out ${k(t.out)} · cache r/w ${k(t.cr)}/${k(t.cw)}`;
-  return `${cname(target)} usage — today: ${fmt(today)}\n${' '.repeat(dispWidth(target) + 8)}all time: ${fmt(all)} (${seen.size} turns)`;
 }
 
 function handle(req, socket) {
@@ -387,7 +354,7 @@ server.listen(PORT, HOST, () => {
     `\x1b[1m✻ claude-msg broker\x1b[0m`,
     ``,
     `\x1b[90mlistening on\x1b[0m ${HOST}:${PORT}`,
-    `\x1b[90m<member> <msg>\x1b[0m send  \x1b[90m·\x1b[0m  \x1b[90mall <msg>\x1b[0m broadcast  \x1b[90m·\x1b[0m  \x1b[90m/who /stop /compact /usage\x1b[0m`,
+    `\x1b[90m<member> <msg>\x1b[0m send  \x1b[90m·\x1b[0m  \x1b[90mall <msg>\x1b[0m broadcast  \x1b[90m·\x1b[0m  \x1b[90m/who ${Object.keys(COMMANDS).map((c) => `/${c}`).join(' ')}\x1b[0m`,
     `\x1b[90mCtrl+C to quit\x1b[0m`,
   ]);
 
@@ -446,17 +413,18 @@ server.listen(PORT, HOST, () => {
     try { process.stdin.setRawMode(false); } catch (_) {}
   });
   process.stdout.write('\x1b]0;claude-msg chat\x07'); // window title
-  // Tab completion: first field = recipient/command; /stop and /usage also
+  // Tab completion: first field = recipient/command; the session commands also
   // complete their target from the session registry (bus names + profiles).
   const completer = (line) => {
-    const tm = line.match(/^\/(stop|usage|compact)\s+(\S*)$/);
+    const tm = line.match(new RegExp(`^/(${CMD_NAMES})\\s+(\\S*)$`));
     if (tm) {
       const cands = [...new Set(readSessions().flatMap((x) => [x.name, x.profile]))].filter(Boolean);
       const hits = cands.filter((c) => c.startsWith(tm[2]));
       return [hits.length ? hits : cands, tm[2]];
     }
     if (line.includes(' ')) return [[], line]; // already typing the body, don't complete
-    const cands = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN).concat('all', '/who', '/stop', '/compact', '/usage');
+    const cands = [...roster.keys()].filter((n) => alive(n) && n !== HUMAN)
+      .concat('all', '/who', ...Object.keys(COMMANDS).map((c) => `/${c}`));
     const hits = cands.filter((c) => c.startsWith(line));
     return [hits.length ? hits : cands, line];
   };
@@ -531,19 +499,18 @@ server.listen(PORT, HOST, () => {
       log(names.length ? names.map((n) => `${cname(n)}(queue:${getQueue(n).length})`).join('  ') : '(nobody online)');
       return promptAnchored();
     }
-    // Native commands for split sessions: /stop = Esc injection, /compact = typed
-    // slash-command injection, /usage = transcript stats.
+    // Native commands for split sessions (COMMANDS): /stop = Esc injection, the
+    // rest type their slash command into the target's input box.
     // Targets are bus names (msg.js rewrites the registry on join); launcher
     // profiles (work/personal) still work as a fallback when unambiguous.
-    const cm = line.match(/^\/(stop|usage|compact)\s+(\S+)$/);
+    const cm = line.match(new RegExp(`^/(${CMD_NAMES})\\s+(\\S+)$`));
     if (cm) {
-      if (cm[1] === 'stop') stopSession(cm[2]);
-      else if (cm[1] === 'compact') compactSession(cm[2]);
-      else log(usageReport(cm[2]));
+      runCommand(cm[1], cm[2]);
       return promptAnchored();
     }
     if (line.startsWith('/')) {
-      log('commands: /who · /stop <session> · /compact <session> · /usage <session>   (session = bus name, or launcher profile like work when unambiguous)');
+      const list = Object.keys(COMMANDS).map((c) => `/${c} <session>`).join(' · ');
+      log(`commands: /who · ${list}   (session = bus name, or launcher profile like work when unambiguous)`);
       return promptAnchored();
     }
     const sp = line.indexOf(' ');

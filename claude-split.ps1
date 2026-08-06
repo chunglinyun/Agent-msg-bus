@@ -157,7 +157,7 @@ function msg {
 # sessions.json entries: { name, profile, pid, hwnd, startedAt }, keyed by pid so
 # two sessions of the same launcher coexist. name starts as the launcher identity
 # (work/personal) and is rewritten to the agent's bus name by msg.js on join;
-# profile stays work/personal (/usage derives the transcript dir from it).
+# profile stays work/personal (a usable fallback target while unambiguous).
 # The HWND is whatever window is foreground when the launcher runs — i.e. the
 # window you typed claude-work into. Windows Terminal tabs share one HWND, so for
 # reliable /stop targeting run each split session in its own window.

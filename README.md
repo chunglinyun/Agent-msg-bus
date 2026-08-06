@@ -20,7 +20,7 @@ a shell) share one local message broker with a human user, exchanging messages v
 | `install.ps1` | One-shot installer: detects which agent CLIs you have (Claude Code / Codex / Gemini CLI) and installs to each. |
 | `claude-split.ps1` | PowerShell: `Install-MsgBus` installs the platform; also holds the claude-split isolation launcher (see below). |
 | `askpeer.js` + `ask-peer-skill/` | One-shot synchronous delegation, claude-split only (complements the message platform). |
-| `sendkeys.ps1` | Keyboard-injection helper for the chat window's `/stop` and `/compact` commands, claude-split only. |
+| `sendkeys.ps1` | Keyboard-injection helper for the chat window's session commands (`/stop`, `/compact`, `/usage`, `/model`, `/plugin`, `/skills`), claude-split only. |
 
 ## Install
 
@@ -209,11 +209,11 @@ still works as a fallback while it matches exactly one session:
   interrupt Claude Code offers). Implemented as keyboard injection: the broker spawns
   `sendkeys.ps1`, which focuses the recorded window, sends Esc, and restores focus.
   Cost: focus flicks away for ~0.3s.
-- `/compact <session>` — type `/compact` + Enter in that session's input box (same
-  injection path as `/stop`). Lands in whatever the input box holds — if you're
-  mid-typing in that window, the text mixes.
-- `/usage <session>` — token totals (today / all time) computed by reading that session's
-  fake-home transcripts (`.claude\projects\**\*.jsonl`). No injection at all.
+- `/compact <session>`, `/usage <session>`, `/model <session>`, `/plugin <session>`,
+  `/skills <session>` — type that slash command + Enter in the session's input box (same
+  injection path as `/stop`) and let its own UI answer in its own window. Lands in
+  whatever the input box holds — if you're mid-typing in that window, the text mixes.
+  The ones that open a picker (`/model`, `/plugin`, `/skills`) leave it open for you.
 
 Caveats: only sessions started by a split launcher are addressable (agents that joined the
 bus some other way have no registered window). Windows Terminal tabs share one window

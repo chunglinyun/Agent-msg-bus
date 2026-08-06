@@ -1,5 +1,6 @@
 # sendkeys.ps1 — inject keystrokes into a split session's terminal window (zero token).
-# Spawned by broker.js chat commands (/stop). Focuses the target window by HWND,
+# Spawned by broker.js chat commands (/stop, /compact, /usage, /model, /plugin,
+# /skills). Focuses the target window by HWND,
 # sends the keys, then restores focus to whatever window was foreground before.
 # Known cost: focus flicks away for ~0.3s. Known limit: Windows Terminal tabs share
 # one HWND — run each split session in its own window for reliable targeting.
