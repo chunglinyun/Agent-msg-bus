@@ -61,6 +61,8 @@ function Install-ClaudeSplit {
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $Global:ClaudeSplitBase ".claude-work")     | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Global:ClaudeSplitBase ".claude-personal") | Out-Null
+    # No claude.exe copy per fake home: the launcher runs the real one by absolute path.
+
     # A session inside a fake home only sees skills under that home, so install a copy of the msg-bus skill in each
     Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-work")
     Install-MsgBus -SourceDir $SourceDir -TargetHome (Join-Path $Global:ClaudeSplitBase ".claude-personal")
@@ -207,6 +209,7 @@ function Invoke-ClaudeWithProfile {
     $oldMsg         = $env:CLAUDE_MSG
     $oldSessPid     = $env:CLAUDE_SPLIT_SESSION_PID
     $oldSessFile    = $env:CLAUDE_SPLIT_SESSIONS_FILE
+    $oldNoUpdate    = $env:DISABLE_AUTOUPDATER
     try {
         $env:USERPROFILE     = $targetPath
         $env:PATH            = "$profileBin;$Global:ClaudeSplitBin;$env:PATH"
@@ -218,8 +221,17 @@ function Invoke-ClaudeWithProfile {
         # name (the fake USERPROFILE makes the file path underivable from inside).
         $env:CLAUDE_SPLIT_SESSION_PID   = "$PID"
         $env:CLAUDE_SPLIT_SESSIONS_FILE = (Join-Path $Global:ClaudeSplitBase "sessions.json")
+        # The updater derives its install dir from the (faked) home, so an update run inside a split
+        # session installs into the fake home where nothing ever launches it. Update in a normal
+        # shell instead: claude update.
+        $env:DISABLE_AUTOUPDATER = "1"
         Write-Host "--- Claude Instance: [$MsgName] ($targetPath) ---" -ForegroundColor Cyan
-        & claude @ClaudeArgs
+        # Absolute path, not a bare `claude`: machine PATH (e.g. C:\nvm4w\nodejs) precedes the user's
+        # ~\.local\bin, so a bare claude can resolve to a leftover npm shim whose bundled claude.exe
+        # is a foreign-platform stub ("not a valid application for this OS platform").
+        $native = Join-Path $Global:ClaudeSplitRealHome ".local\bin\claude.exe"
+        if (-not (Test-Path $native)) { Write-Error "native claude.exe not found at $native; run 'irm https://claude.ai/install.ps1 | iex' first"; return }
+        & $native @ClaudeArgs
     }
     finally {
         $env:USERPROFILE     = $oldUserProfile
@@ -229,6 +241,7 @@ function Invoke-ClaudeWithProfile {
         $env:CLAUDE_MSG      = $oldMsg
         $env:CLAUDE_SPLIT_SESSION_PID   = $oldSessPid
         $env:CLAUDE_SPLIT_SESSIONS_FILE = $oldSessFile
+        $env:DISABLE_AUTOUPDATER        = $oldNoUpdate
         Unregister-ClaudeSplitSession
     }
 }

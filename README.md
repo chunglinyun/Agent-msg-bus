@@ -163,6 +163,13 @@ window handle, which the chat commands below use to target a session. The launch
 `USERPROFILE`/`PATH` when the session exits, so a normal `claude` in the same window afterwards
 is unaffected.
 
+Both profiles run the **one** native install, started by absolute path
+(`~\.local\bin\claude.exe`, what `irm https://claude.ai/install.ps1 | iex` puts there) rather than a
+bare `claude` — a machine-PATH entry that shadows the user's `~\.local\bin`, such as a leftover
+npm-global `@anthropic-ai/claude-code` shim, would otherwise win. Auto-update is off inside split
+sessions: the updater derives its install dir from the home it sees, so it would install into a fake
+home nothing ever launches from. Run `claude update` in a normal shell and both profiles get it.
+
 ### Profiles are yours to define
 
 `work` and `personal` are just the two default profile names — nothing about them is special and
@@ -233,7 +240,12 @@ for multi-turn collaboration.
 - **`port 8787 is already in use`**: the broker is already running, don't start another; set `CLAUDE_MSG_PORT` to move ports.
 - **Code changes have no effect**: what runs are the copies, not this repo — re-run `Install-MsgBus`
   (the skill copy) or `Install-ClaudeSplit` (the bin copy).
-- **Split downloads a separate claude.exe the first time a profile runs**: the home was changed; that's expected.
+- **A split launcher dies with `claude.exe … is not a valid application for this OS platform`**: a
+  stale npm-global `@anthropic-ai/claude-code` shim earlier on PATH was being run instead of the
+  native install. Current versions launch `~\.local\bin\claude.exe` by absolute path; if the launcher
+  reports that file missing, install it with `irm https://claude.ai/install.ps1 | iex`.
+- **`claude update` inside a split session seems to do nothing**: by design — auto-update is disabled
+  there and an explicit update would land in the fake home. Update from a normal shell.
 
 ## License
 
