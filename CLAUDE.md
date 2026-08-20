@@ -4,17 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-# Planning & Refactor Conventions
+# Planning Convention
 
-**Before starting any development work (new features, refactoring, or architectural changes), you must read and follow the `planning-refactor` skill (`.agent/skills/planning-refactor/SKILL.md`).** This document defines when a plan is required, the required plan document format, the review/approval process, severity levels, and scope control principles.
-
-**Golden Rule (always applies):**  
-Any refactoring involving multiple classes, interface changes, or architectural changes **must** have a plan document (for example, `docs/xxx-plan.md`) created and approved by the project owner before implementation begins. Do not make additional unrelated changes outside the approved plan.
-
-# Documentation Placement Conventions
-
-- **`docs/`** — Planning and documentation artifacts, such as implementation plans, refactoring proposals, and checklists.
-- **`Obsidian/`** — Obsidian vault for analysis-oriented documentation (for example, data model ↔ worker relationship diagrams and worker documentation). Use `[[wikilink]]` to connect related notes. Worker documentation should be placed under `Obsidian/worker/`.
+Anything touching several files at once, the broker protocol, or the split launcher's behaviour gets
+a plan document in `docs/<topic>-plan.md`, approved by the project owner before implementation — see
+the existing ones (`msg-bus-platform-plan.md`, `session-registry-busname-plan.md`, …) for the shape:
+problem, design, file-by-file changes, verification list. Don't bundle unrelated changes into an
+approved plan. A one-line fix doesn't need a plan.
 
 # Mandatory Verification Before Modifying Files
 
@@ -38,7 +34,7 @@ A local multi-agent message platform: any number of agent sessions (Claude Code,
 Two orthogonal mechanisms, usable independently:
 
 - **Communication (the main thing)**: `broker.js` is a long-running message bus (NDJSON over `127.0.0.1:8787`, memory only). It holds the roster (lastSeen, TTL default 10 minutes, override with `CLAUDE_MSG_STALE_MS`), `join` for clash protection, `who` to list members, and `to:"all"` to broadcast to every live member (excluding the sender; stale members are skipped).
-- **Isolation (optional)**: the launchers in `claude-split.ps1` (`claude-work` / `claude-personal`) point `USERPROFILE` at a fake home (`~\.claude-split\.claude-work` and so on) so the two instances' `~\.claude.json` and `~\.claude\` never mix. The broker sits at the OS level and is unaffected by fake homes.
+- **Isolation (optional)**: the launchers in `claude-split.ps1` (`claude-work` / `claude-personal`) point `USERPROFILE` at a fake home (`~\.claude-split\.claude-work` and so on) so the two instances' `~\.claude.json` and `~\.claude\` never mix. The broker sits at the OS level and is unaffected by fake homes. Consequences of the faked home, both handled in `Invoke-ClaudeWithProfile`: the binary is started by absolute path (`<real home>\.local\bin\claude.exe`) because a bare `claude` can resolve to something else on machine PATH (e.g. a leftover npm-global shim), and `DISABLE_AUTOUPDATER=1` is set because the updater derives its install dir from the home it sees and would install into a fake home nothing launches from — update in a normal shell.
 
 Message flow: `msg.js` (CLI) → TCP → `broker.js` (one queue per name; `recv --wait N` holds the connection until a message arrives or the wait expires, which is what makes near-real-time possible for turn-based agents).
 
@@ -49,6 +45,7 @@ Supporting pieces:
 - `msg-bus-skill/SKILL.md`: the Claude Code skill. Tells the agent how to pick a name (project + task, two words), join, follow the messaging rules, and run the listen loop (`recv --wait 540`, Bash timeout 600000, stop after two empty returns).
 - `AGENTS-template.md`: the provider-neutral instruction template (paste into AGENTS.md / GEMINI.md).
 - `askpeer.js` + `ask-peer-skill/`: split-only synchronous delegation — a one-shot `claude -p` under the peer's fake home (stateless). Use askpeer for a single question and answer, the message platform for multi-turn work.
+- **Session commands** (`/stop`, `/compact`, `/usage`, `/model`, `/plugin`, `/skills`) are zero-token keystroke injection, and the chain spans four files: `claude-split.ps1` writes `~\.claude-split\sessions.json` (one entry per launcher process: name, profile, pid, hwnd) → `msg.js join` rewrites that entry's `name` to the agent's bus name (via `CLAUDE_SPLIT_SESSION_PID` / `CLAUDE_SPLIT_SESSIONS_FILE`, since the fake `USERPROFILE` makes the path underivable from inside) → the broker's chat mode matches `/<cmd> <target>`, looks the target up by name then profile (>1 hit = ambiguous, refuse) → `sendkeys.ps1` focuses that HWND, sends the keys, restores focus. Windows Terminal tabs share one HWND, so targeting is only reliable with one session per window.
 - `msg.cmd`: the Windows wrapper. An agent's bash won't find `.cmd` and will hit the system `msg.exe`, so **agents always use `node <path to msg.js> ...`** (the skill uses its own bundled copy); `msg` is only for manual PowerShell use (the profile function shadows msg.exe).
 
 ## Development and testing
