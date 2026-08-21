@@ -41,7 +41,7 @@ each one:
 
 | Detected | Gets |
 |---|---|
-| Claude Code | the skill (SKILL.md + msg.js + broker.js) in `~\.claude\skills\claude-msg\` |
+| Claude Code | the skill (SKILL.md + msg.js + broker.js) in `~\.claude\skills\claude-msg\`, plus web.js + web.html so `Start-ClaudeWeb` finds them next to the broker |
 | Codex | msg.js + broker.js in `~\.codex\claude-msg\`, instructions merged into `~\.codex\AGENTS.md` |
 | Gemini CLI | msg.js + broker.js in `~\.gemini\claude-msg\`, instructions merged into `~\.gemini\GEMINI.md` |
 | nothing known | `-Agent other`: the same pair in `~\.claude-msg\` plus an `AGENTS.md` to paste anywhere |
@@ -52,11 +52,13 @@ your AGENTS.md/GEMINI.md alone. Force targets with `-Agent claude,codex,gemini,o
 Without PowerShell, copy the files by hand; same result.
 
 `install.ps1` only copies files — the PowerShell helpers (`msg`, `Start-ClaudeBroker`,
-`claude-work`/`claude-personal`) are functions in `claude-split.ps1`, so source it to get them:
+`Start-ClaudeWeb`, `claude-work`/`claude-personal`) are functions in `claude-split.ps1`, so
+source it to get them:
 
 ```powershell
 . "$repo\claude-split.ps1"      # put this line in $PROFILE to keep them
 Start-ClaudeBroker              # reads the broker path from ~\.claude-msgbus.json
+Start-ClaudeWeb                 # optional: the browser window, on 8788
 ```
 
 Or skip it entirely and run the broker directly: `node ~\.claude\skills\claude-msg\broker.js`.
@@ -162,7 +164,7 @@ Install-ClaudeSplit -SourceDir $repo      # on a re-install you can omit -Source
 
 `Install-ClaudeSplit` does four things:
 
-1. creates `~\.claude-split\bin\` with copies of `broker.js`, `msg.js`, `msg.cmd`, `sendkeys.ps1`;
+1. creates `~\.claude-split\bin\` with copies of `broker.js`, `msg.js`, `msg.cmd`, `sendkeys.ps1`, `web.js`, `web.html`;
 2. creates the two fake homes `~\.claude-split\.claude-work\` and `...\.claude-personal\`;
 3. installs the msg-bus skill into each fake home (a session under a fake home only sees skills under that home);
 4. writes `~\.claude-msgbus.json` with `mode: "split"` — from then on `Start-ClaudeBroker` and the
@@ -225,10 +227,11 @@ msg @all "..."                            # everyone online except you
 Between agents it is the same story — a session sends to whatever name `who` shows, regardless of
 which launcher (or no launcher) started the peer.
 
-## Chat-window native commands (split only, zero token)
+## Native session commands (split only, zero token)
 
-When the broker runs in the foreground (chat mode), these commands act on split sessions
-directly — no message, no model turn, no tokens. `<session>` is the agent's bus name
+Type these in the foreground broker's chat window **or in the web frontend's input box** —
+the frontend sends them over the bus as `{cmd:'command'}`, which runs the same injection.
+They act on split sessions directly: no message, no model turn, no tokens. `<session>` is the agent's bus name
 (Tab-completes; the launcher registers the session in `~\.claude-split\sessions.json` and
 `msg join` rewrites the entry to the bus name). The launcher profile (`work` / `personal`)
 still works as a fallback while it matches exactly one session:
@@ -261,6 +264,12 @@ for multi-turn collaboration.
 - **`port 8787 is already in use`**: the broker is already running, don't start another; set `CLAUDE_MSG_PORT` to move ports.
 - **Code changes have no effect**: what runs are the copies, not this repo — re-run `Install-MsgBus`
   (the skill copy) or `Install-ClaudeSplit` (the bin copy).
+- **The web page shows `broker offline - retrying`**: the frontend is up but the broker is not.
+  Start it (`msg up`), and the page reconnects on its own — no reload needed.
+- **The web page is empty after restarting the broker**: expected. The 200-event ring buffer lives
+  in the broker's memory, so restarting it starts the history over.
+- **A sandboxed HTML preview is missing its images**: also expected. The preview inherits the
+  page's `img-src 'self' data:`, which blocks external loads so agent-sent HTML cannot phone home.
 - **A split launcher dies with `claude.exe … is not a valid application for this OS platform`**: a
   stale npm-global `@anthropic-ai/claude-code` shim earlier on PATH was being run instead of the
   native install. Current versions launch `~\.local\bin\claude.exe` by absolute path; if the launcher

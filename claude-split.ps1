@@ -120,7 +120,7 @@ function Start-ClaudeWeb {
     $cfg = Get-MsgBusConfig
     $brokerPath = if ($cfg -and (Test-Path $cfg.broker)) { $cfg.broker }
                   elseif (Test-Path (Join-Path $Global:ClaudeSplitBin "broker.js")) { Join-Path $Global:ClaudeSplitBin "broker.js" }
-                  else { Join-Path $Global:ClaudeSplitRealHome ".claude\skills\claude-msgroker.js" }
+                  else { Join-Path $Global:ClaudeSplitRealHome ".claude\skills\claude-msg\broker.js" }
     $web = Join-Path (Split-Path $brokerPath -Parent) "web.js"
     if (-not (Test-Path $web)) { Write-Error "web.js not found next to $brokerPath (re-run Install-MsgBus or Install-ClaudeSplit)"; return }
     if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { Write-Host "web frontend already running (port $Port), not starting another." -ForegroundColor Yellow; return }
