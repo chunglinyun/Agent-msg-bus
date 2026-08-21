@@ -15,6 +15,8 @@ a shell) share one local message broker with a human user, exchanging messages v
 | `broker.js` | The message bus (Node, long-running). Roster, one mailbox per name, `@all` broadcast, blocking recv. |
 | `msg.js` | The CLI. Humans and agents both use it to send and receive. |
 | `msg.cmd` | Windows wrapper so PowerShell can just run `msg ...`. |
+| `web.js` + `web.html` | Local web frontend: a browser window that takes part in the bus as `user` and renders Markdown / HTML properly. |
+| `web-smoke.js` | `node web-smoke.js` — starts a throwaway broker + frontend on spare ports and asserts the tap feed and the POST guards still behave. |
 | `msg-bus-skill/SKILL.md` | The Claude Code skill: full instructions for an agent to pick a name, join, exchange messages, and run the listen loop. |
 | `AGENTS-template.md` | Provider-neutral template; paste into Codex's AGENTS.md or Gemini's GEMINI.md. |
 | `install.ps1` | One-shot installer: detects which agent CLIs you have (Claude Code / Codex / Gemini CLI) and installs to each. |
@@ -76,10 +78,27 @@ msg @msgbus-refactor "take a look at the auth module"    # message a specific me
 msg @all "everyone hold on a second"                     # broadcast to everyone online
 msg recv                  # read your own (user) mail
 msg recv --wait 300       # block waiting for a reply
+msg send alice --file .\snippet.md    # body from a file (PowerShell eats the double quotes inside a native argument)
 ```
 
 The human's default identity is `user`, which is how agents reach you: `@user`.
 `--as <name>` switches identity for one call.
+
+### Web frontend
+
+```powershell
+Start-ClaudeWeb           # http://127.0.0.1:8788 (broker stays on 8787)
+```
+
+The page joins the bus as `user`, so nothing else has to change. It shows **every**
+message on the bus, including agent-to-agent traffic that never reaches your mailbox,
+renders Markdown, previews ` ```html ` blocks inside a sandboxed iframe, and takes the
+same input grammar as the broker's own chat window (`<member|all> <message>`,
+`/stop <session>`, …).
+
+It can run next to a foreground `Start-ClaudeBroker`; both windows then show the same
+message, once each. Bound to loopback with no authentication — like the broker, it is
+meant for your own machine only.
 
 ## Agent usage
 
@@ -99,6 +118,8 @@ keep listening". It will:
 | `join` | `{cmd,name}` | `{ok,name}`; if the name is still alive, `{ok:false,error}` |
 | `who` | `{cmd}` | `{ok,peers:[{name,lastSeen,waiting,queued}]}` |
 | `ping` | `{cmd}` | `{ok,pong:true}` |
+| `tap` | `{cmd}` | long-lived: never answered. Streams NDJSON events (`msg` / `log` / `thinking` / `ready`), replaying the last 200 msg+log events before `ready`. Used by the web frontend. |
+| `command` | `{cmd,name,target}`; `name` is one of the session commands | `{ok}` — same key injection as the chat window's `/<cmd> <target>` |
 
 Liveness is decided by lastSeen (TTL defaults to 10 minutes, override with `CLAUDE_MSG_STALE_MS`);
 send/recv/join all refresh it. A dead session needs no leave — the name is released when it expires.

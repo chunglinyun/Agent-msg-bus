@@ -4,6 +4,7 @@
 // Identity precedence: --as <name> > env CLAUDE_MSG_NAME > default "user" (the human).
 // Usage:
 //   msg send <@peer|@all> <message...>  send a message (@ optional; @all broadcasts to everyone online)
+//   msg send <@peer|@all> --file <path>  send a file's contents as the message body (avoids shell quoting)
 //   msg <peer> <message...>             shorthand for send (peer must be online; @peer works too, but PowerShell treats @ as splatting)
 //   msg recv [--wait N]                 receive messages; --wait N blocks up to N seconds for new ones
 //   msg join <name>                     come online under this name (the broker rejects clashes)
@@ -63,9 +64,19 @@ async function main() {
 
   try {
     if (cmd === 'send') {
+      // --file reads the body from a file instead of the command line. PowerShell
+      // wraps a native argument in double quotes without escaping the ones inside
+      // it, so pasting code with " through the shell silently loses them.
+      const fi = rest.indexOf('--file');
+      let fileText = null;
+      if (fi >= 0) {
+        if (!rest[fi + 1]) { console.error('usage: msg send <@peer|@all> --file <path>'); process.exit(2); }
+        fileText = require('fs').readFileSync(rest[fi + 1], 'utf8');
+        rest.splice(fi, 2);
+      }
       const to = (rest[0] || '').replace(/^@/, '');
-      const text = rest.slice(1).join(' ');
-      if (!to || !text) { console.error('usage: msg send <@peer|@all> <message>'); process.exit(2); }
+      const text = fileText !== null ? fileText : rest.slice(1).join(' ');
+      if (!to || !text) { console.error('usage: msg send <@peer|@all> <message> | msg send <@peer|@all> --file <path>'); process.exit(2); }
       const r = await request({ cmd: 'send', from: NAME, to, text });
       if (!r.ok) { console.error('error:', r.error); process.exit(1); }
       if (to === 'all') console.log(`broadcast to ${r.delivered} member(s)`);
@@ -128,7 +139,7 @@ async function main() {
       console.log(NAME);
 
     } else {
-      console.log('usage: msg send <@peer|@all> <message> | msg <online member> <message> | msg recv [--wait N] | msg join <name> | msg who | msg up | msg ping | msg whoami (common: --as <name>)');
+      console.log('usage: msg send <@peer|@all> <message|--file path> | msg <online member> <message> | msg recv [--wait N] | msg join <name> | msg who | msg up | msg ping | msg whoami (common: --as <name>)');
     }
   } catch (e) {
     console.error('failed:', e.message);
