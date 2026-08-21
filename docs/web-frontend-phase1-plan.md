@@ -163,7 +163,18 @@ ponytail 取捨：skill 目錄多一個 agent 用不到的檔案，換來「web.
 
 ## 驗證
 
-其中 1、4、5、6、7、10、10b、17、18 已寫成 `web-smoke.js`（無框架、純 assert，自己起一組 broker + web 在備用埠上跑）。其餘要人眼看瀏覽器，仍需手動。
+其中 1、4、5、6、7、10、10b、17、18 已寫成 `web-smoke.js`（無框架、純 assert，自己起一組 broker + web 在備用埠上跑）；其餘在瀏覽器裡逐項實測過。
+
+**兩項尚未完成**：
+
+- 第 19 項只驗到錯誤路徑（`no registered session`）。真正的按鍵注入要有 split launcher 起的視窗才能測，手邊沒有。
+- 第 17 項只確認了 `user` 在線，沒有真的掛 15 分鐘。
+
+**實測時記下的三件事**：
+
+- broker 重啟會清空畫面上的歷史（ring buffer 只在記憶體）。前端行為正確——`ready` 讓它重建而不是疊加——但使用者會看到 feed 突然空掉，這是預期的。
+- 87.5KB 的單行惡意 Markdown 渲染耗時約 540ms。沒有卡死，但那是最慢的一條路；真要更快得換掉逐行重掃。
+- broker 的 `cname()` 對 `user` 一律印 `you`，所以系統訊息會出現「you disconnected」，與網頁其他地方叫 `user` 不一致。純顯示問題。
 
 1. 背景 broker + `Start-ClaudeWeb`，兩個 agent 互傳（A→B，不經過 user）：訊息出現在網頁上。
 2. 重新整理分頁 5 次：feed **沒有**出現 `disconnected, marked offline`，`msg who` 仍看得到 `user`。
