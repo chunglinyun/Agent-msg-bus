@@ -31,10 +31,11 @@ $Global:ClaudeSplitBase = if ($script:__msgBusCfg -and $script:__msgBusCfg.base)
                           else { Join-Path $Global:ClaudeSplitRealHome ".claude-split" }
 $Global:ClaudeSplitBin  = Join-Path $Global:ClaudeSplitBase "bin"   # holds broker.js / msg.js / msg.cmd
 $Global:ClaudeMsgPort   = if ($script:__msgBusCfg -and $script:__msgBusCfg.port) { [int]$script:__msgBusCfg.port } else { 8787 }
+$Global:ClaudeWebPort   = if ($script:__msgBusCfg -and $script:__msgBusCfg.webPort) { [int]$script:__msgBusCfg.webPort } else { 8788 }
 
 function Write-MsgBusConfig {
     param([string]$Mode, [string]$Broker, [string]$SourceDir)
-    @{ mode = $Mode; source = $SourceDir; base = $Global:ClaudeSplitBase; broker = $Broker; port = $Global:ClaudeMsgPort } |
+    @{ mode = $Mode; source = $SourceDir; base = $Global:ClaudeSplitBase; broker = $Broker; port = $Global:ClaudeMsgPort; webPort = $Global:ClaudeWebPort } |
         ConvertTo-Json | Set-Content -Path $Global:ClaudeMsgConfig -Encoding UTF8
     Write-Host "Config written to $Global:ClaudeMsgConfig (mode=$Mode)" -ForegroundColor DarkGray
 }
@@ -56,7 +57,7 @@ function Install-ClaudeSplit {
     $SourceDir = Resolve-MsgBusSource $SourceDir
     if (-not $SourceDir) { Write-Error "no -SourceDir given and none recorded in $Global:ClaudeMsgConfig; run Install-ClaudeSplit -SourceDir <clone dir>"; return }
     New-Item -ItemType Directory -Force -Path $Global:ClaudeSplitBin | Out-Null
-    foreach ($f in @("broker.js", "msg.js", "msg.cmd", "sendkeys.ps1")) {
+    foreach ($f in @("broker.js", "msg.js", "msg.cmd", "sendkeys.ps1", "web.js", "web.html")) {
         Copy-Item (Join-Path $SourceDir $f) (Join-Path $Global:ClaudeSplitBin $f) -Force
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $Global:ClaudeSplitBase ".claude-work")     | Out-Null
@@ -108,6 +109,25 @@ function Start-ClaudeBroker {
     $env:CLAUDE_MSG_PORT = "$Port"
     Write-Host "Starting broker (port $Port)... close that window to stop it." -ForegroundColor Green
     Start-Process -FilePath "node" -ArgumentList @("`"$broker`"") -WindowStyle Normal
+}
+
+# --- Start the web frontend (in its own window; leave it open) -------
+# The page joins the bus as `user`, so it can run alongside a foreground broker:
+# both windows show every message, each one just shows it once.
+function Start-ClaudeWeb {
+    param([int]$Port = $Global:ClaudeWebPort)
+    # web.js always sits next to broker.js, whichever install mode wrote the config
+    $cfg = Get-MsgBusConfig
+    $brokerPath = if ($cfg -and (Test-Path $cfg.broker)) { $cfg.broker }
+                  elseif (Test-Path (Join-Path $Global:ClaudeSplitBin "broker.js")) { Join-Path $Global:ClaudeSplitBin "broker.js" }
+                  else { Join-Path $Global:ClaudeSplitRealHome ".claude\skills\claude-msg\broker.js" }
+    $web = Join-Path (Split-Path $brokerPath -Parent) "web.js"
+    if (-not (Test-Path $web)) { Write-Error "web.js not found next to $brokerPath (re-run Install-MsgBus or Install-ClaudeSplit)"; return }
+    if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { Write-Host "web frontend already running (port $Port), not starting another." -ForegroundColor Yellow; return }
+    $env:CLAUDE_MSG_PORT = "$Global:ClaudeMsgPort"
+    $env:CLAUDE_WEB_PORT = "$Port"
+    Write-Host "Starting web frontend: http://127.0.0.1:$Port  (close that window to stop it)" -ForegroundColor Green
+    Start-Process -FilePath "node" -ArgumentList @("`"$web`"") -WindowStyle Normal
 }
 
 # --- The msg shortcut for PowerShell --------------------------------

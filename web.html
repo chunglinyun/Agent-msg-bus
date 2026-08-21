@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-msg</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1b1f26; --line: #2a3038; --fg: #d7dce3;
+    --dim: #7d8794; --me: #1f2d3d; --tome: #2a2418; --accent: #e0913c;
+    --code-bg: #000;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; background: var(--bg); color: var(--fg);
+         font: 14px/1.55 "Segoe UI", system-ui, sans-serif; }
+  aside { width: 210px; flex: none; border-right: 1px solid var(--line); padding: 12px;
+          display: flex; flex-direction: column; gap: 10px; }
+  aside h2 { margin: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  #who { list-style: none; margin: 0; padding: 0; flex: 1; overflow-y: auto; }
+  #who li { padding: 4px 6px; display: flex; justify-content: space-between; gap: 6px;
+            cursor: pointer; border-radius: 4px; margin: 0 -6px; }
+  #who li:hover { background: var(--panel); }
+  #who li.target { background: var(--me); }
+  #who .q { color: var(--dim); font-size: 12px; }
+  #who .busy { color: var(--accent); }
+  #status { font-size: 12px; color: var(--dim); border-top: 1px solid var(--line); padding-top: 8px; }
+  #status.off { color: #d1615d; }
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #feed { flex: 1; overflow-y: auto; padding: 14px 16px; }
+  .msg { border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; margin-bottom: 10px;
+         background: var(--panel); max-width: 78%; }
+  /* Your own messages sit on the right, the way every chat client does it. */
+  .msg.mine { background: var(--me); border-color: #2f4356; margin-left: auto; }
+  .msg.mine .who { text-align: right; }
+  .msg.tome { border-color: #4a4026; background: var(--tome); }
+  .who { font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+  .body > :first-child { margin-top: 0; }
+  .body > :last-child { margin-bottom: 0; }
+  .body p { margin: .5em 0; }
+  .body h3, .body h4, .body h5, .body h6 { margin: .7em 0 .3em; font-size: 1em; }
+  .body ul, .body ol { margin: .4em 0; padding-left: 1.4em; }
+  .body code { background: var(--code-bg); padding: 1px 4px; border-radius: 3px; font-size: 13px; }
+  .body a { color: #6fb3e0; }
+  /* System lines must not look like anything an agent can produce: no bubble,
+     no markdown, plain text only. */
+  .sys { color: var(--dim); font-size: 12.5px; padding: 2px 2px 2px 10px;
+         border-left: 2px solid var(--line); margin: 0 0 8px 2px; white-space: pre-wrap; }
+  .code { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: .5em 0; }
+  .codehead { display: flex; gap: 8px; align-items: center; background: #0f1216; padding: 3px 8px;
+              font-size: 11px; color: var(--dim); }
+  .codehead span { flex: 1; }
+  .codehead button { background: none; border: 1px solid var(--line); color: var(--dim);
+                     border-radius: 4px; font-size: 11px; padding: 1px 7px; cursor: pointer; }
+  .codehead button:hover { color: var(--fg); }
+  pre { margin: 0; padding: 8px 10px; overflow-x: auto; background: var(--code-bg); }
+  pre code { background: none; padding: 0; }
+  .pv iframe { width: 100%; height: 320px; border: 0; background: #fff; display: block; }
+  .note { font-size: 11px; color: var(--dim); padding: 4px 8px; background: #0f1216;
+          border-bottom: 1px solid var(--line); }
+  details summary { cursor: pointer; color: var(--dim); font-size: 12px; }
+  #bar { border-top: 1px solid var(--line); padding: 10px 12px; display: flex; gap: 8px;
+         position: relative; }
+  #pop { display: none; position: absolute; bottom: calc(100% - 2px); left: 12px; z-index: 5;
+         min-width: 220px; max-height: 240px; overflow-y: auto; background: var(--panel);
+         border: 1px solid var(--line); border-radius: 6px; padding: 4px;
+         box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+  .popitem { padding: 4px 8px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  .popitem.on { background: var(--me); }
+  .popitem .hint { color: var(--dim); font-size: 11px; margin-left: 10px; }
+  #in { flex: 1; resize: none; height: 46px; background: #0f1216; color: var(--fg);
+        border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; font: inherit; }
+  #bar button { background: var(--accent); border: 0; color: #14161a; font-weight: 600;
+                border-radius: 6px; padding: 0 16px; cursor: pointer; }
+</style>
+</head>
+<body>
+<aside>
+  <h2>members</h2>
+  <ul id="who"></ul>
+  <div id="status">connecting...</div>
+</aside>
+<main>
+  <div id="feed"></div>
+  <div id="bar">
+    <div id="pop"></div>
+    <textarea id="in" autocomplete="off" spellcheck="false"
+      placeholder="&lt;member&gt; message   |   all message   |   /stop &lt;session&gt;      (Tab completes, Enter sends, Shift+Enter newline)"></textarea>
+    <button id="send">send</button>
+  </div>
+</main>
+
+<script nonce="__NONCE__">
+// Rendering rule: escape first, then build every tag ourselves. Nothing arriving
+// on the bus can become a tag, so no sanitizer is needed - and Markdown's inline
+// HTML is deliberately unsupported (it shows up as text).
+function chars(a, b) { var s = ''; for (var i = a; i <= b; i++) s += String.fromCharCode(i); return s; }
+var ANSI = /\x1b\[[0-9;]*m/g;
+// Trojan Source, chat edition: bidi overrides can make one member's line look
+// like another's, or reverse a command shown to the user.
+var BIDI = new RegExp('[' + chars(0x202a, 0x202e) + chars(0x2066, 0x2069) + ']', 'g');
+var CTRL = new RegExp('[' + chars(0, 32) + ']', 'g'); // C0 controls + space, stripped from URLs
+var BT = String.fromCharCode(96);
+var FENCE_OPEN = new RegExp('^' + BT + BT + BT + '(\\S*)\\s*$');
+var FENCE_END = new RegExp('^' + BT + BT + BT + '\\s*$');
+var CODE_SPAN = new RegExp(BT + '([^' + BT + ']+)' + BT, 'g');
+var HEAD = /^(#{1,6})\s+(.*)$/;
+var ITEM = /^\s*(?:[-*+]|\d+\.)\s+(.*)$/;
+
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+// Escaping does not help against javascript: - there is no < in it. Whitelist
+// the scheme instead, and drop the whole link when it does not match.
+function safeUrl(u) {
+  var clean = u.replace(CTRL, '');
+  return /^(https?:|mailto:)/i.test(clean) ? clean : null;
+}
+function inline(s) {
+  var h = esc(s);
+  h = h.replace(CODE_SPAN, '<code>$1</code>');
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+  h = h.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (m, t, u) {
+    var safe = safeUrl(u);
+    return safe ? '<a href="' + esc(safe) + '" target="_blank" rel="noopener noreferrer">' + t + '</a>' : m;
+  });
+  return h;
+}
+
+function codeBlock(code, lang) {
+  var wrap = document.createElement('div'); wrap.className = 'code';
+  var head = document.createElement('div'); head.className = 'codehead';
+  var tag = document.createElement('span'); tag.textContent = lang || 'code';
+  var copy = document.createElement('button'); copy.textContent = 'copy';
+  copy.onclick = function () {
+    // Trailing newline stripped: pasted into a shell it would run the last line.
+    navigator.clipboard.writeText(code.replace(/\n+$/, ''));
+    copy.textContent = 'copied'; setTimeout(function () { copy.textContent = 'copy'; }, 1200);
+  };
+  head.appendChild(tag); head.appendChild(copy);
+  var pre = document.createElement('pre');
+  var c = document.createElement('code'); c.textContent = code; pre.appendChild(c);
+  wrap.appendChild(head); wrap.appendChild(pre);
+
+  if (lang === 'html') {
+    var toggle = document.createElement('button'); toggle.textContent = 'preview';
+    head.appendChild(toggle);
+    var pv = null;
+    toggle.onclick = function () {
+      if (pv) { pv.remove(); pv = null; pre.style.display = ''; toggle.textContent = 'preview'; return; }
+      pv = document.createElement('div'); pv.className = 'pv';
+      var f = document.createElement('iframe');
+      // sandbox before srcdoc, and both before the node enters the document.
+      // Never allow-scripts together with allow-same-origin: that pair lets the
+      // frame strip its own sandbox attribute.
+      f.setAttribute('sandbox', '');
+      f.setAttribute('referrerpolicy', 'no-referrer');
+      f.srcdoc = code; // property, never an attribute string
+      var note = document.createElement('div'); note.className = 'note';
+      // Above the frame, not below it: a blocked beacon leaves a broken-image
+      // icon, and the first reaction to that is "the preview is broken".
+      note.textContent = 'sandboxed preview - scripts and external resources (images, fonts) are blocked, so missing images are expected';
+      pv.appendChild(note); pv.appendChild(f);
+      pre.style.display = 'none'; toggle.textContent = 'code';
+      wrap.appendChild(pv);
+    };
+  }
+  return wrap;
+}
+
+function render(text) {
+  var src = String(text).replace(ANSI, '').replace(BIDI, '');
+  var lines = src.split('\n');
+  var frag = document.createDocumentFragment();
+  var i = 0;
+  while (i < lines.length) {
+    var f = lines[i].match(FENCE_OPEN);
+    if (f) {
+      var body = []; i++;
+      while (i < lines.length && !FENCE_END.test(lines[i])) body.push(lines[i++]);
+      i++; // closing fence; if absent the block simply runs to the end of the text
+      frag.appendChild(codeBlock(body.join('\n'), f[1].toLowerCase()));
+      continue;
+    }
+    var h = lines[i].match(HEAD);
+    if (h) {
+      var el = document.createElement('h' + Math.min(h[1].length + 2, 6));
+      el.innerHTML = inline(h[2]); frag.appendChild(el); i++; continue;
+    }
+    if (ITEM.test(lines[i])) {
+      var list = document.createElement(/^\s*\d/.test(lines[i]) ? 'ol' : 'ul');
+      while (i < lines.length) {
+        var m = lines[i].match(ITEM); if (!m) break;
+        var li = document.createElement('li'); li.innerHTML = inline(m[1]); list.appendChild(li); i++;
+      }
+      frag.appendChild(list); continue;
+    }
+    if (!lines[i].trim()) { i++; continue; }
+    var para = [];
+    while (i < lines.length && lines[i].trim() && !FENCE_OPEN.test(lines[i])
+           && !HEAD.test(lines[i]) && !ITEM.test(lines[i])) para.push(lines[i++]);
+    var p = document.createElement('p');
+    p.innerHTML = inline(para.join('\n')).replace(/\n/g, '<br>');
+    frag.appendChild(p);
+  }
+  return frag;
+}
+
+var feed = document.getElementById('feed');
+var whoList = document.getElementById('who');
+var statusBox = document.getElementById('status');
+var input = document.getElementById('in');
+var pending = [], ready = false, thinking = {}, peers = [];
+
+function stamp(ts) { return new Date(ts || Date.now()).toLocaleTimeString('en-GB'); }
+function atBottom() { return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60; }
+function push(el) { var stick = atBottom(); feed.appendChild(el); if (stick) feed.scrollTop = feed.scrollHeight; }
+
+function sysLine(text, ts) {
+  var el = document.createElement('div'); el.className = 'sys';
+  el.textContent = stamp(ts) + '  ' + text; // textContent: the system area never renders bus text
+  push(el);
+}
+
+function bubble(ev) {
+  var el = document.createElement('div');
+  el.className = 'msg' + (ev.from === 'user' ? ' mine' : (ev.to === 'user' ? ' tome' : ''));
+  var head = document.createElement('div'); head.className = 'who';
+  var route = ev.from === 'user'
+    ? '-> ' + (ev.to === 'all' ? '@all' : ev.to)
+    : ev.from + (ev.to === 'all' ? ' -> @all' : (ev.to === 'user' ? '' : ' -> ' + ev.to));
+  head.textContent = route + (ev.queued ? '  (offline, queued)' : '') + '   ' + stamp(ev.ts);
+  var body = document.createElement('div'); body.className = 'body';
+  body.appendChild(render(ev.text));
+  el.appendChild(head);
+  var count = String(ev.text).split('\n').length;
+  if (count > 20) {
+    var d = document.createElement('details');
+    var s = document.createElement('summary'); s.textContent = count + ' lines';
+    d.appendChild(s); d.appendChild(body); el.appendChild(d);
+  } else el.appendChild(body);
+  push(el);
+}
+
+// The recipient is the first word of the input line (same grammar as the broker's
+// chat window). Clicking a member swaps that word instead of making the user
+// retype it, and a send leaves it behind so a reply is just typing.
+function setRecipient(name) {
+  var line = input.value;
+  var sp = line.search(/\s/);
+  var rest = line;
+  if (sp > 0) {
+    var first = line.slice(0, sp).replace(/^@/, '');
+    if (first === 'all' || peers.some(function (p) { return p.name === first; })) rest = line.slice(sp + 1);
+  } else rest = ''; // a lone word is a half-typed recipient, not a message
+  input.value = name + ' ' + rest;
+  input.focus();
+  paintWho();
+}
+
+function currentTarget() {
+  var sp = input.value.search(/\s/);
+  return sp > 0 ? input.value.slice(0, sp).replace(/^@/, '') : '';
+}
+
+function paintWho() {
+  var target = currentTarget();
+  whoList.innerHTML = '';
+  peers.forEach(function (p) {
+    var li = document.createElement('li');
+    li.title = 'send to ' + p.name;
+    if (p.name === target) li.className = 'target';
+    li.onclick = function () { setRecipient(p.name); };
+    var n = document.createElement('span');
+    n.textContent = (thinking[p.name] ? '* ' : '') + p.name;
+    if (thinking[p.name]) n.className = 'busy';
+    var q = document.createElement('span'); q.className = 'q';
+    q.textContent = p.waiting ? 'waiting' : (p.queued ? 'queue ' + p.queued : 'idle');
+    li.appendChild(n); li.appendChild(q); whoList.appendChild(li);
+  });
+}
+
+function apply(ev) {
+  if (ev.type === 'msg') return bubble(ev);
+  if (ev.type === 'log') return sysLine(ev.text, ev.ts);
+  if (ev.type === 'thinking') { if (ev.on) thinking[ev.name] = 1; else delete thinking[ev.name]; paintWho(); }
+}
+
+function connect() {
+  var es = new EventSource('/events');
+  es.onmessage = function (e) {
+    var ev = JSON.parse(e.data);
+    // Everything before ready is the broker replaying its ring buffer. Rebuild
+    // the feed from it rather than appending, or a reconnect doubles the history.
+    if (ev.type === 'ready') {
+      feed.innerHTML = '';
+      thinking = {};
+      (ev.thinking || []).forEach(function (n) { thinking[n] = 1; });
+      pending.forEach(apply); pending = []; ready = true;
+      feed.scrollTop = feed.scrollHeight;
+      statusBox.textContent = 'connected'; statusBox.className = '';
+      paintWho();
+      return;
+    }
+    if (!ready) { pending.push(ev); return; }
+    apply(ev);
+  };
+  es.onerror = function () {
+    ready = false; pending = [];
+    statusBox.textContent = 'broker offline - retrying'; statusBox.className = 'off';
+  };
+}
+
+// Relative URL on purpose: localhost and 127.0.0.1 are different origins, so a
+// hard-coded IP would make our own request cross-site whenever the page is
+// opened under the other name.
+function post(url, body) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(function (r) { return r.json(); }).then(function (r) {
+    if (!r.ok) sysLine('error: ' + r.error);
+  }).catch(function (e) { sysLine('error: ' + e.message); });
+}
+
+var CMDS = ['stop', 'compact', 'usage', 'model', 'plugin', 'skills'];
+
+// Same grammar as the broker's own input line, so there is only one to learn.
+// The box is only cleared once something is actually sent: a pasted block whose
+// first word is not a member must not vanish into a phantom recipient.
+function submit() {
+  var line = input.value.replace(/\s+$/, '');
+  if (!line.trim()) return;
+
+  // The recipient sticks around after a send, so a command typed next arrives as
+  // "bob /stop foo". Drop the leading recipient when a command follows it,
+  // otherwise the command would go out as a chat message.
+  var pre = line.match(/^(\S+)\s+\/(\w+)((?:\s[\s\S]*)?)$/);
+  if (pre && (pre[2] === 'who' || CMDS.indexOf(pre[2]) >= 0)) {
+    var head = pre[1].replace(/^@/, '');
+    // Only a real command may eat the recipient. "alice /etc/hosts is stale" is
+    // a message about a path, and used to vanish into the help branch.
+    if (head === 'all' || peers.some(function (p) { return p.name === head; })) line = '/' + pre[2] + pre[3];
+  }
+
+  if (/^\/who\s*$/.test(line)) {
+    input.value = '';
+    return sysLine(peers.length
+      ? peers.map(function (p) { return p.name + (p.queued ? ' (queue ' + p.queued + ')' : ''); }).join('   ')
+      : '(nobody online)');
+  }
+  var c = line.match(/^\/(\w+)\s+(\S+)\s*$/);
+  if (c && CMDS.indexOf(c[1]) >= 0) { input.value = ''; return post('/command', { name: c[1], target: c[2] }); }
+  if (line.charAt(0) === '/') {
+    // Left in the box on purpose: this is the typo path, and retyping is worse.
+    return sysLine('commands: /who   ' + CMDS.map(function (x) { return '/' + x + ' <session>'; }).join('   '));
+  }
+  var sp = line.search(/\s/);
+  if (sp < 1) return sysLine('usage: <member|all> <message>   (first word is the recipient)');
+  var prefix = line.slice(0, sp);
+  var to = prefix.replace(/^@/, '');
+  // Same rule as msg.js: a bare name has to be online (or "all"); the @ prefix
+  // is the explicit form that also reaches an offline member, message queued.
+  var known = to === 'all' || peers.some(function (p) { return p.name === to; });
+  if (!known && line.charAt(0) !== '@') {
+    var names = peers.map(function (p) { return p.name; }).join(', ') || '(nobody online)';
+    return sysLine('no member named "' + to + '". The first word is the recipient - online now: '
+      + names + '. Use @' + to + ' to send anyway (it will be queued).');
+  }
+  input.value = prefix + ' '; // keep the recipient, clear the message
+  post('/send', { to: to, text: line.slice(sp + 1).trim() });
+  paintWho();
+}
+
+// Completion popup. Only the first word (recipient or command) and a command's
+// second word (session) are completable; inside the message body it stays shut,
+// so it can never interfere with what you are actually writing.
+var pop = document.getElementById('pop');
+var popHits = [], popIdx = 0;
+
+function tokenAt() {
+  var pos = input.selectionStart;
+  var frag = input.value.slice(0, pos).match(/(\S*)$/)[1];
+  var start = pos - frag.length;
+  var idx = input.value.slice(0, start).split(/\s+/).filter(Boolean).length;
+  var names = peers.map(function (p) { return p.name; });
+  var opts = null;
+  if (idx === 0) {
+    opts = frag.charAt(0) === '/'
+      ? ['/who'].concat(CMDS.map(function (x) { return '/' + x; }))
+      : ['all'].concat(names);
+  } else if (idx === 1 && input.value.charAt(0) === '/') {
+    opts = names; // session target for /stop and friends
+  }
+  if (!opts) return null;
+  var lead = frag.charAt(0) === '@' ? '@' : '';
+  var stem = frag.slice(lead.length).toLowerCase();
+  return { start: start, lead: lead, stem: stem, frag: frag,
+           hits: opts.filter(function (o) { return o.toLowerCase().indexOf(stem) === 0; }) };
+}
+
+function hidePop() { pop.style.display = 'none'; popHits = []; }
+
+function drawPop() {
+  pop.innerHTML = '';
+  popHits.forEach(function (n, i) {
+    var d = document.createElement('div');
+    d.className = 'popitem' + (i === popIdx ? ' on' : '');
+    d.textContent = n;
+    var p = peers.filter(function (x) { return x.name === n; })[0];
+    if (p) {
+      var hint = document.createElement('span'); hint.className = 'hint';
+      hint.textContent = p.waiting ? 'waiting' : (p.queued ? 'queue ' + p.queued : 'idle');
+      d.appendChild(hint);
+    }
+    // mousedown, not click: the textarea must not lose focus before we insert
+    d.onmousedown = function (e) { e.preventDefault(); accept(n); };
+    pop.appendChild(d);
+  });
+  pop.style.display = 'block';
+  var on = pop.querySelector('.on');
+  if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest' });
+}
+
+function showPop() {
+  var t = tokenAt();
+  // nothing typed yet, no match, or already complete -> stay out of the way
+  if (!t || !t.frag || !t.hits.length || (t.hits.length === 1 && t.hits[0].toLowerCase() === t.stem)) return hidePop();
+  popHits = t.hits; popIdx = 0; drawPop();
+}
+
+function accept(name) {
+  var t = tokenAt(); if (!t) return;
+  var after = input.value.slice(input.selectionStart);
+  input.value = input.value.slice(0, t.start) + t.lead + name + ' ' + after;
+  var caret = t.start + t.lead.length + name.length + 1;
+  input.setSelectionRange(caret, caret);
+  hidePop(); paintWho(); input.focus();
+}
+
+document.getElementById('send').onclick = submit;
+input.addEventListener('keydown', function (e) {
+  if (popHits.length) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); popIdx = (popIdx + 1) % popHits.length; return drawPop(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); popIdx = (popIdx + popHits.length - 1) % popHits.length; return drawPop(); }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); return accept(popHits[popIdx]); }
+    if (e.key === 'Escape') { e.preventDefault(); return hidePop(); }
+  }
+  if (e.key === 'Tab') { e.preventDefault(); return showPop(); }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+});
+input.addEventListener('input', function () { paintWho(); showPop(); });
+input.addEventListener('blur', hidePop);
+
+function loadWho() {
+  fetch('/who').then(function (r) { return r.json(); }).then(function (r) {
+    if (r.ok) { peers = r.peers; paintWho(); }
+  }).catch(function () { /* broker down; the SSE status already says so */ });
+}
+
+connect();
+loadWho();
+setInterval(loadWho, 5000);
+</script>
+</body>
+</html>

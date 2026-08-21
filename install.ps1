@@ -112,7 +112,9 @@ $brokerForConfig = $null
 foreach ($t in $targets) {
     $dest = Join-Path $UserHome $t.tools
     if ($t.kind -eq 'skill') {
-        Copy-Tools $dest @('msg-bus-skill\SKILL.md', 'msg.js', 'broker.js')
+        # web.js/web.html are for the human, not the agent, but they ride along so
+        # Start-ClaudeWeb can always find web.js next to broker.js
+        Copy-Tools $dest @('msg-bus-skill\SKILL.md', 'msg.js', 'broker.js', 'web.js', 'web.html')
         Write-Host "[$($t.name)] skill -> $dest" -ForegroundColor Green
     }
     else {

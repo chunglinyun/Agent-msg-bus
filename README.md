@@ -15,6 +15,8 @@ a shell) share one local message broker with a human user, exchanging messages v
 | `broker.js` | The message bus (Node, long-running). Roster, one mailbox per name, `@all` broadcast, blocking recv. |
 | `msg.js` | The CLI. Humans and agents both use it to send and receive. |
 | `msg.cmd` | Windows wrapper so PowerShell can just run `msg ...`. |
+| `web.js` + `web.html` | Local web frontend: a browser window that takes part in the bus as `user` and renders Markdown / HTML properly. |
+| `web-smoke.js` | `node web-smoke.js` — starts a throwaway broker + frontend on spare ports and asserts the tap feed and the POST guards still behave. |
 | `msg-bus-skill/SKILL.md` | The Claude Code skill: full instructions for an agent to pick a name, join, exchange messages, and run the listen loop. |
 | `AGENTS-template.md` | Provider-neutral template; paste into Codex's AGENTS.md or Gemini's GEMINI.md. |
 | `install.ps1` | One-shot installer: detects which agent CLIs you have (Claude Code / Codex / Gemini CLI) and installs to each. |
@@ -39,7 +41,7 @@ each one:
 
 | Detected | Gets |
 |---|---|
-| Claude Code | the skill (SKILL.md + msg.js + broker.js) in `~\.claude\skills\claude-msg\` |
+| Claude Code | the skill (SKILL.md + msg.js + broker.js) in `~\.claude\skills\claude-msg\`, plus web.js + web.html so `Start-ClaudeWeb` finds them next to the broker |
 | Codex | msg.js + broker.js in `~\.codex\claude-msg\`, instructions merged into `~\.codex\AGENTS.md` |
 | Gemini CLI | msg.js + broker.js in `~\.gemini\claude-msg\`, instructions merged into `~\.gemini\GEMINI.md` |
 | nothing known | `-Agent other`: the same pair in `~\.claude-msg\` plus an `AGENTS.md` to paste anywhere |
@@ -50,11 +52,13 @@ your AGENTS.md/GEMINI.md alone. Force targets with `-Agent claude,codex,gemini,o
 Without PowerShell, copy the files by hand; same result.
 
 `install.ps1` only copies files — the PowerShell helpers (`msg`, `Start-ClaudeBroker`,
-`claude-work`/`claude-personal`) are functions in `claude-split.ps1`, so source it to get them:
+`Start-ClaudeWeb`, `claude-work`/`claude-personal`) are functions in `claude-split.ps1`, so
+source it to get them:
 
 ```powershell
 . "$repo\claude-split.ps1"      # put this line in $PROFILE to keep them
 Start-ClaudeBroker              # reads the broker path from ~\.claude-msgbus.json
+Start-ClaudeWeb                 # optional: the browser window, on 8788
 ```
 
 Or skip it entirely and run the broker directly: `node ~\.claude\skills\claude-msg\broker.js`.
@@ -76,10 +80,27 @@ msg @msgbus-refactor "take a look at the auth module"    # message a specific me
 msg @all "everyone hold on a second"                     # broadcast to everyone online
 msg recv                  # read your own (user) mail
 msg recv --wait 300       # block waiting for a reply
+msg send alice --file .\snippet.md    # body from a file (PowerShell eats the double quotes inside a native argument)
 ```
 
 The human's default identity is `user`, which is how agents reach you: `@user`.
 `--as <name>` switches identity for one call.
+
+### Web frontend
+
+```powershell
+Start-ClaudeWeb           # http://127.0.0.1:8788 (broker stays on 8787)
+```
+
+The page joins the bus as `user`, so nothing else has to change. It shows **every**
+message on the bus, including agent-to-agent traffic that never reaches your mailbox,
+renders Markdown, previews ` ```html ` blocks inside a sandboxed iframe, and takes the
+same input grammar as the broker's own chat window (`<member|all> <message>`,
+`/stop <session>`, …).
+
+It can run next to a foreground `Start-ClaudeBroker`; both windows then show the same
+message, once each. Bound to loopback with no authentication — like the broker, it is
+meant for your own machine only.
 
 ## Agent usage
 
@@ -99,6 +120,8 @@ keep listening". It will:
 | `join` | `{cmd,name}` | `{ok,name}`; if the name is still alive, `{ok:false,error}` |
 | `who` | `{cmd}` | `{ok,peers:[{name,lastSeen,waiting,queued}]}` |
 | `ping` | `{cmd}` | `{ok,pong:true}` |
+| `tap` | `{cmd}` | long-lived: never answered. Streams NDJSON events (`msg` / `log` / `thinking` / `ready`), replaying the last 200 msg+log events before `ready`. Used by the web frontend. |
+| `command` | `{cmd,name,target}`; `name` is one of the session commands | `{ok}` — same key injection as the chat window's `/<cmd> <target>` |
 
 Liveness is decided by lastSeen (TTL defaults to 10 minutes, override with `CLAUDE_MSG_STALE_MS`);
 send/recv/join all refresh it. A dead session needs no leave — the name is released when it expires.
@@ -141,7 +164,7 @@ Install-ClaudeSplit -SourceDir $repo      # on a re-install you can omit -Source
 
 `Install-ClaudeSplit` does four things:
 
-1. creates `~\.claude-split\bin\` with copies of `broker.js`, `msg.js`, `msg.cmd`, `sendkeys.ps1`;
+1. creates `~\.claude-split\bin\` with copies of `broker.js`, `msg.js`, `msg.cmd`, `sendkeys.ps1`, `web.js`, `web.html`;
 2. creates the two fake homes `~\.claude-split\.claude-work\` and `...\.claude-personal\`;
 3. installs the msg-bus skill into each fake home (a session under a fake home only sees skills under that home);
 4. writes `~\.claude-msgbus.json` with `mode: "split"` — from then on `Start-ClaudeBroker` and the
@@ -204,10 +227,11 @@ msg @all "..."                            # everyone online except you
 Between agents it is the same story — a session sends to whatever name `who` shows, regardless of
 which launcher (or no launcher) started the peer.
 
-## Chat-window native commands (split only, zero token)
+## Native session commands (split only, zero token)
 
-When the broker runs in the foreground (chat mode), these commands act on split sessions
-directly — no message, no model turn, no tokens. `<session>` is the agent's bus name
+Type these in the foreground broker's chat window **or in the web frontend's input box** —
+the frontend sends them over the bus as `{cmd:'command'}`, which runs the same injection.
+They act on split sessions directly: no message, no model turn, no tokens. `<session>` is the agent's bus name
 (Tab-completes; the launcher registers the session in `~\.claude-split\sessions.json` and
 `msg join` rewrites the entry to the bus name). The launcher profile (`work` / `personal`)
 still works as a fallback while it matches exactly one session:
@@ -240,6 +264,12 @@ for multi-turn collaboration.
 - **`port 8787 is already in use`**: the broker is already running, don't start another; set `CLAUDE_MSG_PORT` to move ports.
 - **Code changes have no effect**: what runs are the copies, not this repo — re-run `Install-MsgBus`
   (the skill copy) or `Install-ClaudeSplit` (the bin copy).
+- **The web page shows `broker offline - retrying`**: the frontend is up but the broker is not.
+  Start it (`msg up`), and the page reconnects on its own — no reload needed.
+- **The web page is empty after restarting the broker**: expected. The 200-event ring buffer lives
+  in the broker's memory, so restarting it starts the history over.
+- **A sandboxed HTML preview is missing its images**: also expected. The preview inherits the
+  page's `img-src 'self' data:`, which blocks external loads so agent-sent HTML cannot phone home.
 - **A split launcher dies with `claude.exe … is not a valid application for this OS platform`**: a
   stale npm-global `@anthropic-ai/claude-code` shim earlier on PATH was being run instead of the
   native install. Current versions launch `~\.local\bin\claude.exe` by absolute path; if the launcher

@@ -52,8 +52,9 @@ function cname(name) {
 // ponytail: only the CJK/fullwidth ranges, no narrow dingbats like ✻; good
 // enough without pulling in wcwidth
 const FULLWIDTH = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/;
+const ANSI = /\x1b\[[0-9;]*m/g; // shared with the tap feed: the web UI renders text, not escapes
 function dispWidth(s) {
-  const bare = s.replace(/\x1b\[[0-9;]*m/g, '');
+  const bare = s.replace(ANSI, '');
   let w = 0;
   for (const ch of bare) w += FULLWIDTH.test(ch) ? 2 : 1;
   return w;
@@ -74,15 +75,23 @@ const waiters = new Map(); // name -> [{ socket, timer }, ...]
 const roster = new Map();  // name -> lastSeen (ms). ponytail: no leave/prune, filtering with alive() on read is enough
 const STALE_MS = Number(process.env.CLAUDE_MSG_STALE_MS || 10 * 60 * 1000);
 
+// Event feed for the web frontend (cmd: tap). One socket per browser tab; the
+// ring buffer is replayed when a tap connects so a fresh tab is not blank.
+const taps = new Set();
+const history = [];
+const HISTORY_MAX = 200;
+
 // Chat-mode "thinking" indicator: a member is thinking from the moment it picks up
 // a message until it sends something or goes back to waiting in recv. No ack
 // protocol needed — pickup and re-wait are visible to the broker anyway.
 const thinking = new Map(); // name -> since (ms)
 let syncSpinner = () => {}; // bound in chat mode; stays a no-op in background mode
 function setThinking(name, on) {
-  if (!chatMode || !name || name === HUMAN) return;
+  if (!name || name === HUMAN) return;
+  if (on === thinking.has(name)) return; // no change: don't re-emit (recv calls this every round)
   if (on) thinking.set(name, Date.now()); else thinking.delete(name);
-  syncSpinner();
+  emit({ type: 'thinking', name, on });
+  syncSpinner(); // no-op outside chat mode
 }
 
 function touch(name) { if (name && name !== '?') roster.set(name, Date.now()); }
@@ -114,7 +123,21 @@ function deliverToWaiter(name, msg) {
   return false;
 }
 
-function log(s) {
+// Push one event to every tap. msg/log events are kept for replay; thinking is
+// state, not history — buffering it would push real messages out of the ring.
+function emit(ev) {
+  if (!ev.ts) ev.ts = Date.now();
+  if (ev.type !== 'thinking') {
+    history.push(ev);
+    if (history.length > HISTORY_MAX) history.shift();
+  }
+  for (const sock of taps) {
+    try { sock.write(JSON.stringify(ev) + '\n'); } catch (_) { taps.delete(sock); }
+  }
+}
+
+// tap = false for lines whose structured form is emitted separately (logMsg).
+function log(s, tap = true) {
   // Multi-line messages: CR+LF each line (a bare LF stair-steps inside the scroll
   // region) and indent continuation lines to line up after the timestamp column.
   const body = String(s).replace(/\r\n?/g, '\n').split('\n').join('\r\n' + ' '.repeat(10));
@@ -126,6 +149,7 @@ function log(s) {
     const rows = process.stdout.rows || 24;
     process.stdout.write(`\x1b7\x1b[${rows - inputRows - 1};1H\n${line}\x1b8`);
   } else console.log(line);
+  if (tap) emit({ type: 'log', text: String(s).replace(ANSI, '') });
 }
 
 // Delivery order: hand to a waiter → in chat mode show messages for the human via
@@ -147,7 +171,8 @@ function logMsg(msg, extra = '') {
   // Mark messages meant for the human with ★ and brighten the body so they stand out
   const body = airy(msg.text);
   const text = msg.to === HUMAN || msg.to === 'all' ? `\x1b[97m${body}\x1b[0m` : body;
-  log(`${msg.to === HUMAN ? '\x1b[1;93m★\x1b[0m ' : ''}${arrow}: ${text}${extra}`);
+  log(`${msg.to === HUMAN ? '\x1b[1;93m★\x1b[0m ' : ''}${arrow}: ${text}${extra}`, false);
+  emit({ type: 'msg', ...msg, queued: msg.to !== 'all' && !alive(msg.to) });
 }
 
 // --- Chat-mode native commands for split sessions (zero token, Windows only) ---
@@ -314,6 +339,27 @@ function handle(req, socket) {
     return respond(socket, { ok: true, messages: [] });
   }
 
+  if (cmd === 'tap') {
+    // Event feed for the web frontend: replay the ring buffer, then stream live.
+    // Both writes happen in this tick, so no emit can interleave with the replay.
+    // ready marks the end of the replay and carries the current thinking state.
+    taps.add(socket);
+    for (const ev of history) socket.write(JSON.stringify(ev) + '\n');
+    socket.write(JSON.stringify({ type: 'ready', thinking: [...thinking.keys()], ts: Date.now() }) + '\n');
+    socket.on('close', () => taps.delete(socket));
+    return; // long-lived: never respond, that would end the socket
+  }
+
+  if (cmd === 'command') {
+    // Chat mode's /<cmd> <target> key injection, reachable from the web UI.
+    // Whitelist lookup: req.name is untrusted, never index COMMANDS with it directly.
+    if (!Object.prototype.hasOwnProperty.call(COMMANDS, req.name))
+      return respond(socket, { ok: false, error: `unknown command: ${req.name}` });
+    if (!req.target) return respond(socket, { ok: false, error: 'missing "target"' });
+    runCommand(req.name, req.target); // reports its own outcome through log() -> tap
+    return respond(socket, { ok: true });
+  }
+
   if (cmd === 'ping') return respond(socket, { ok: true, pong: true });
 
   return respond(socket, { ok: false, error: 'unknown cmd: ' + cmd });
@@ -380,8 +426,12 @@ server.listen(PORT, HOST, () => {
     process.stdout.write(`\x1b7\x1b[${rows - inputRows};1H\x1b[2K${line}\x1b8`);
   };
   syncSpinner = () => {
-    // ponytail: STALE_MS cap so a member that dies mid-work can't spin forever
-    for (const [n, ts] of thinking) if (Date.now() - ts > STALE_MS) thinking.delete(n);
+    // ponytail: STALE_MS cap so a member that dies mid-work can't spin forever.
+    // Emit on the way out: setThinking's no-change guard would otherwise swallow
+    // the member's own later "done", leaving the web indicator lit forever.
+    for (const [n, ts] of thinking) {
+      if (Date.now() - ts > STALE_MS) { thinking.delete(n); emit({ type: 'thinking', name: n, on: false }); }
+    }
     if (thinking.size && !spinTimer) spinTimer = setInterval(syncSpinner, 120);
     if (!thinking.size && spinTimer) { clearInterval(spinTimer); spinTimer = null; }
     drawStatus();
