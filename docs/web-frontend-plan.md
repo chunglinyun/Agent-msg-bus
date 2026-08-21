@@ -72,10 +72,10 @@ agent 送的 HTML 不能進主文件 DOM——這頁面有 bus 寫入權，而 a
 
 ### 協定
 
-- `send` 增加選用欄位 `stream: <id>` 與 `final: true`。
-- broker：帶 `stream` 的 chunk **立刻推給 tap**（前端依 id 累積）；對**佇列收件者**依 id 緩衝，等 `final` 才合併成一則完整訊息投遞。結果是串流純屬傳輸細節，agent 端行為不變，不會收到碎片。
-- 未完成串流的沖出時機：**用送出端 socket 關閉當訊號，不要用閒置逾時。** 一次串流由 `msg.js` 一條連線從頭持有到尾，socket 收掉而沒有 `final` 就是送出端死了，確定性。閒置逾時會誤判——`npm test` 中間安靜兩分鐘完全正常。
-- `msg.js send --stream` 讀 stdin，依時間或行數批次送 chunk。
+- `send` 增加選用欄位 `stream: true` 與 `final: true`。**送出端不產生 id**：一次串流就是一條連線（中斷偵測本來就靠 socket 關閉），所以 socket 自己就是識別；broker 把狀態掛在 socket 上，並產生一個 id 放進推給 tap 的事件，讓前端能把 chunk 歸到同一則。
+- broker：帶 `stream` 的 chunk **立刻推給 tap**；對**佇列收件者**緩衝，等 `final` 才合併成一則完整訊息投遞。結果是串流純屬傳輸細節，agent 端行為不變，不會收到碎片。
+- 未完成串流的沖出時機：**用送出端 socket 關閉當訊號，不要用閒置逾時。** socket 收掉而沒有 `final` 就是送出端死了，確定性。閒置逾時會誤判——`npm test` 中間安靜兩分鐘完全正常。
+- `msg.js send --stream` 把 stdin 的每個 `data` 事件原樣當一個 chunk 送出，不自己做批次（Node 的 stream 已經以 64KB 為單位讀進來了）。
 
 ### 串流中的格式判定
 
