@@ -426,8 +426,12 @@ server.listen(PORT, HOST, () => {
     process.stdout.write(`\x1b7\x1b[${rows - inputRows};1H\x1b[2K${line}\x1b8`);
   };
   syncSpinner = () => {
-    // ponytail: STALE_MS cap so a member that dies mid-work can't spin forever
-    for (const [n, ts] of thinking) if (Date.now() - ts > STALE_MS) thinking.delete(n);
+    // ponytail: STALE_MS cap so a member that dies mid-work can't spin forever.
+    // Emit on the way out: setThinking's no-change guard would otherwise swallow
+    // the member's own later "done", leaving the web indicator lit forever.
+    for (const [n, ts] of thinking) {
+      if (Date.now() - ts > STALE_MS) { thinking.delete(n); emit({ type: 'thinking', name: n, on: false }); }
+    }
     if (thinking.size && !spinTimer) spinTimer = setInterval(syncSpinner, 120);
     if (!thinking.size && spinTimer) { clearInterval(spinTimer); spinTimer = null; }
     drawStatus();

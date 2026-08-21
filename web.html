@@ -336,10 +336,12 @@ function submit() {
   // The recipient sticks around after a send, so a command typed next arrives as
   // "bob /stop foo". Drop the leading recipient when a command follows it,
   // otherwise the command would go out as a chat message.
-  var pre = line.match(/^(\S+)\s+(\/.*)$/);
-  if (pre) {
+  var pre = line.match(/^(\S+)\s+\/(\w+)((?:\s[\s\S]*)?)$/);
+  if (pre && (pre[2] === 'who' || CMDS.indexOf(pre[2]) >= 0)) {
     var head = pre[1].replace(/^@/, '');
-    if (head === 'all' || peers.some(function (p) { return p.name === head; })) line = pre[2];
+    // Only a real command may eat the recipient. "alice /etc/hosts is stale" is
+    // a message about a path, and used to vanish into the help branch.
+    if (head === 'all' || peers.some(function (p) { return p.name === head; })) line = '/' + pre[2] + pre[3];
   }
 
   if (/^\/who\s*$/.test(line)) {

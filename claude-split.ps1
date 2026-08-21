@@ -35,7 +35,7 @@ $Global:ClaudeWebPort   = if ($script:__msgBusCfg -and $script:__msgBusCfg.webPo
 
 function Write-MsgBusConfig {
     param([string]$Mode, [string]$Broker, [string]$SourceDir)
-    @{ mode = $Mode; source = $SourceDir; base = $Global:ClaudeSplitBase; broker = $Broker; port = $Global:ClaudeMsgPort } |
+    @{ mode = $Mode; source = $SourceDir; base = $Global:ClaudeSplitBase; broker = $Broker; port = $Global:ClaudeMsgPort; webPort = $Global:ClaudeWebPort } |
         ConvertTo-Json | Set-Content -Path $Global:ClaudeMsgConfig -Encoding UTF8
     Write-Host "Config written to $Global:ClaudeMsgConfig (mode=$Mode)" -ForegroundColor DarkGray
 }

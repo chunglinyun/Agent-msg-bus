@@ -67,7 +67,9 @@ async function main() {
       // --file reads the body from a file instead of the command line. PowerShell
       // wraps a native argument in double quotes without escaping the ones inside
       // it, so pasting code with " through the shell silently loses them.
-      const fi = rest.indexOf('--file');
+      // Only in flag position (before or right after the recipient): an unquoted
+      // message body may legitimately contain the word --file.
+      const fi = rest.indexOf('--file') <= 1 ? rest.indexOf('--file') : -1;
       let fileText = null;
       if (fi >= 0) {
         if (!rest[fi + 1]) { console.error('usage: msg send <@peer|@all> --file <path>'); process.exit(2); }

@@ -100,12 +100,18 @@ function readJson(req) {
     let b = '';
     req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); });
     req.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve(null); } });
+    // Over the cap (or the client vanished): 'end' never comes, and without this
+    // the handler would await forever and answer nothing.
+    req.on('close', () => resolve(null));
+    req.on('error', () => resolve(null));
   });
 }
 
 function json(res, code, obj) {
-  res.writeHead(code, { 'content-type': 'application/json' });
-  res.end(JSON.stringify(obj));
+  try {
+    res.writeHead(code, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(obj));
+  } catch (_) { /* client already gone */ }
 }
 
 // The page lives in web.html next to this file: keeping it out of a template
