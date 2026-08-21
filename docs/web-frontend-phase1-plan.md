@@ -43,7 +43,7 @@ Phase 2（串流）另見 `docs/web-frontend-phase2-stream-plan.md`。
 1. **新增模組層狀態**：`const taps = new Set();`、`const history = []; const HISTORY_MAX = 200;`
 2. **新增 `emit(ev)`**：`ev.ts` 補上 → push 進 `history`（超過 200 從頭砍）→ 對每個 tap socket 寫 `JSON.stringify(ev) + '\n'`（try/catch 吞掉死 socket）。
    **不可用 `respond()`**：它寫完就 `socket.end()`，tap 需要長連線。
-   **`history` 只收 `msg` 與 `log`，不收 `thinking`。** thinking 是高頻狀態切換，進了 ring buffer 會把真正的訊息擠出 200 筆之外；而 Phase 3 的 `msg log` 共用這塊 buffer，更不該看到它。
+   **`history` 只收 `msg` 與 `log`（白名單，不是「排除 thinking」的黑名單）。** thinking 是高頻狀態切換，進了 ring buffer 會把真正的訊息擠出 200 筆之外；而 Phase 3 的 `msg log` 共用這塊 buffer，更不該看到它。
 3. **`log(s)` 加一個參數**：`function log(s, tap = true)`，在函式尾端 `if (tap) emit({ type: 'log', text: String(s).replace(ANSI, '') })`。
    把 `dispWidth()` 裡的 `/\x1b\[[0-9;]*m/g` 抽成模組層 `const ANSI = ...` 給兩邊共用（只用於 `.replace`，不會有 `lastIndex` 問題）。
 4. **`logMsg()` 改呼叫 `log(..., false)`**，並自行 `emit({ type: 'msg', ...msg, queued: msg.to !== 'all' && !alive(msg.to) })`。
@@ -62,6 +62,7 @@ Phase 2（串流）另見 `docs/web-frontend-phase2-stream-plan.md`。
 ponytail 上限：
 - `history` 只存記憶體，broker 重啟即空。
 - tap 沒有 backpressure（寫入失敗就丟該 socket）。
+- `emit()` 目前實作成黑名單（`ev.type !== 'thinking'`），與白名單在 phase 1 等價，但 phase 2 的 `chunk` 一出現就會沖掉歷史——屆時必須改回白名單，已記在 phase 2 計畫。
 - ring buffer 是 200 筆**訊息物件**，沒有單筆大小上限——agent 硬塞幾十 KB 的 HTML，200 筆就是幾十 MB。這正是「大型產出寫檔案」那條約定要擋的事；真咬到再加單筆截斷。
 
 ### `web.js` + `web.html`（新檔）
