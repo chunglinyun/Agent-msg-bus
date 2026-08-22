@@ -22,7 +22,7 @@ a shell) share one local message broker with a human user, exchanging messages v
 | `install.ps1` | One-shot installer: detects which agent CLIs you have (Claude Code / Codex / Gemini CLI) and installs to each. |
 | `claude-split.ps1` | PowerShell: `Install-MsgBus` installs the platform; also holds the claude-split isolation launcher (see below). |
 | `askpeer.js` + `ask-peer-skill/` | One-shot synchronous delegation, claude-split only (complements the message platform). |
-| `sendkeys.ps1` | Keyboard-injection helper for the chat window's session commands (`/stop`, `/compact`, `/usage`, `/model`, `/plugin`, `/skills`), claude-split only. |
+| `sendkeys.ps1` | Keyboard-injection helper for the chat window's session commands (`/stop`, `/compact`, `/usage`, `/model`, `/plugin`, `/skills`). Installed next to every `broker.js` copy. |
 
 ## Install
 
@@ -41,10 +41,10 @@ each one:
 
 | Detected | Gets |
 |---|---|
-| Claude Code | the skill (SKILL.md + msg.js + broker.js) in `~\.claude\skills\claude-msg\`, plus web.js + web.html so `Start-ClaudeWeb` finds them next to the broker |
-| Codex | msg.js + broker.js in `~\.codex\claude-msg\`, instructions merged into `~\.codex\AGENTS.md` |
-| Gemini CLI | msg.js + broker.js in `~\.gemini\claude-msg\`, instructions merged into `~\.gemini\GEMINI.md` |
-| nothing known | `-Agent other`: the same pair in `~\.claude-msg\` plus an `AGENTS.md` to paste anywhere |
+| Claude Code | the skill (SKILL.md + msg.js + broker.js) in `~\.claude\skills\claude-msg\`, plus sendkeys.ps1 + web.js + web.html so the session commands and `Start-ClaudeWeb` find them next to the broker |
+| Codex | msg.js + broker.js + sendkeys.ps1 in `~\.codex\claude-msg\`, instructions merged into `~\.codex\AGENTS.md` |
+| Gemini CLI | msg.js + broker.js + sendkeys.ps1 in `~\.gemini\claude-msg\`, instructions merged into `~\.gemini\GEMINI.md` |
+| nothing known | `-Agent other`: the same trio in `~\.claude-msg\` plus an `AGENTS.md` to paste anywhere |
 
 The instructions come from `AGENTS-template.md` with the real msg.js path filled in, wrapped in
 `<!-- claude-msg:begin/end -->` markers — re-running rewrites that block and leaves the rest of
@@ -52,8 +52,9 @@ your AGENTS.md/GEMINI.md alone. Force targets with `-Agent claude,codex,gemini,o
 Without PowerShell, copy the files by hand; same result.
 
 `install.ps1` only copies files — the PowerShell helpers (`msg`, `Start-ClaudeBroker`,
-`Start-ClaudeWeb`, `claude-work`/`claude-personal`) are functions in `claude-split.ps1`, so
-source it to get them:
+`Start-ClaudeWeb`, `claude`, `claude-work`/`claude-personal`) are functions in `claude-split.ps1`,
+so source it to get them (`claude` there wraps the real binary to register the window, which is
+what makes the session commands below work):
 
 ```powershell
 . "$repo\claude-split.ps1"      # put this line in $PROFILE to keep them
@@ -118,6 +119,7 @@ keep listening". It will:
 | `send` | `{cmd,from,to,text}`; `to:"all"` broadcasts | `{ok}`; broadcasts carry `delivered`; an offline recipient carries `hint` |
 | `recv` | `{cmd,name,wait}`; `wait>0` holds the connection | `{ok,messages:[{from,to,text,ts}]}` |
 | `join` | `{cmd,name}` | `{ok,name}`; if the name is still alive, `{ok:false,error}` |
+| `register` | `{cmd,name,hwnd,pid}` | `{ok}` — records the window `/stop <name>` should target |
 | `who` | `{cmd}` | `{ok,peers:[{name,lastSeen,waiting,queued}]}` |
 | `ping` | `{cmd}` | `{ok,pong:true}` |
 | `tap` | `{cmd}` | long-lived: never answered. Streams NDJSON events (`msg` / `log` / `thinking` / `ready`), replaying the last 200 msg+log events before `ready`. Used by the web frontend. |
@@ -215,7 +217,7 @@ no `--as` and it lands on the roster as `work` / `personal` / `research` the fir
 msg.js. (Before that it is not online yet: a `msg @work "..."` is accepted but answered with
 `"work" is offline, message queued`, and it arrives when the session first receives.) The skill
 then tells the agent to `join` a project-plus-task name of its own (`msgbus-refactor`), which
-becomes its bus name and rewrites its entry in `~\.claude-split\sessions.json`. So in practice:
+becomes its bus name, and the broker renames that session's registry entry to match. So in practice:
 
 ```powershell
 msg who                                   # authoritative: whatever names are actually online
@@ -227,14 +229,37 @@ msg @all "..."                            # everyone online except you
 Between agents it is the same story — a session sends to whatever name `who` shows, regardless of
 which launcher (or no launcher) started the peer.
 
-## Native session commands (split only, zero token)
+## Native session commands (zero token)
 
 Type these in the foreground broker's chat window **or in the web frontend's input box** —
 the frontend sends them over the bus as `{cmd:'command'}`, which runs the same injection.
-They act on split sessions directly: no message, no model turn, no tokens. `<session>` is the agent's bus name
-(Tab-completes; the launcher registers the session in `~\.claude-split\sessions.json` and
-`msg join` rewrites the entry to the bus name). The launcher profile (`work` / `personal`)
-still works as a fallback while it matches exactly one session:
+They act on the session's terminal window directly: no message, no model turn, no tokens.
+`<session>` is the agent's bus name, looked up in `sessions.json`. That file lives in the home of
+whichever install is running the broker — `~\.claude` for a skill install, `~\.codex` / `~\.gemini`
+for those agents, `~\.claude-split` for the split launcher:
+
+| How the session started | Addressable | How its window gets recorded |
+|---|---|---|
+| `claude` — with `claude-split.ps1` sourced | yes, automatically | the `claude` function records the window on start and drops the entry on exit; `msg join` renames it to the bus name |
+| `claude-work` / `claude-personal` (split) | yes, automatically | same, under a fake home |
+| `claude` without that file sourced, or a session already running | after one `msg register` | manual fallback, below |
+| Claude desktop app | no | no console window of its own, and one window hosts several sessions |
+
+Sourcing `claude-split.ps1` is what makes this automatic — `claude` becomes a function that
+registers the window before handing over to the real binary. Nothing to remember, and the entry
+disappears when the session ends. One-shot runs (`claude -p ...`) register nothing.
+
+The fallback, for a session that is already running or a shell without that file — run it **in the
+window you want to target**:
+
+```powershell
+msg register mybus
+```
+
+It has to be typed in that window: the handle comes from `GetForegroundWindow()`, i.e. whatever
+window is in front when you press Enter — which is also why a session cannot register itself.
+Without the `msg` function, run `node "<path>\msg.js" register mybus`; `msg.js` sits next to the
+`broker.js` you are running. Then start claude in that window and tell the agent to join as `mybus`.
 
 - `/stop <session>` — press Esc in that session's terminal window (the only external
   interrupt Claude Code offers). Implemented as keyboard injection: the broker spawns
@@ -246,9 +271,13 @@ still works as a fallback while it matches exactly one session:
   whatever the input box holds — if you're mid-typing in that window, the text mixes.
   The ones that open a picker (`/model`, `/plugin`, `/skills`) leave it open for you.
 
-Caveats: only sessions started by a split launcher are addressable (agents that joined the
-bus some other way have no registered window). Windows Terminal tabs share one window
-handle — run each split session in its own window for reliable `/stop`. `/stop` fails
+Caveats: Windows Terminal tabs share one window handle — run each session in its own window
+for reliable targeting. A window can hold one addressable session: registering it again (or
+launching a split session in it) replaces the entry. Tab completion offers names the broker
+already knows, so a name that is registered but not yet joined has to be typed in full — it
+still works. The launcher profile (`work` / `personal`) is a fallback target while it matches
+exactly one session; terminal-registered sessions carry no profile and go by name only. When
+the window is gone, the next command aimed at it says so and drops the entry. `/stop` fails
 (with a clear error) while the desktop is locked.
 
 `askpeer.js` (with `ask-peer-skill/`) is split-only synchronous delegation: it opens a one-shot

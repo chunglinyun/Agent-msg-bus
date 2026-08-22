@@ -85,6 +85,9 @@ function Install-MsgBus {
     Copy-Item (Join-Path $SourceDir "msg-bus-skill\SKILL.md") $dest -Force
     Copy-Item (Join-Path $SourceDir "msg.js")    $dest -Force
     Copy-Item (Join-Path $SourceDir "broker.js") $dest -Force
+    # broker.js looks for the injection helper in its own directory, and this copy
+    # is the broker for a skill-only install, so it needs one next to it.
+    Copy-Item (Join-Path $SourceDir "sendkeys.ps1") $dest -Force
     Write-Host "msg-bus skill installed to $dest" -ForegroundColor Green
     # Only write the config when installing into the real home; the fake-home calls made
     # by split don't count. If split is already installed, don't downgrade it to skill.
@@ -148,6 +151,21 @@ function Get-ClaudeMsgCli {
     }
     return $binCopy
 }
+# Where sessions.json lives — same rule as broker.js: the registry belongs to the
+# install that owns the broker, i.e. the nearest ancestor of the installed copy whose
+# name starts with a dot (~\.claude for a skill install, ~\.codex / ~\.gemini for the
+# other agents, ~\.claude-split for split, whose copies sit in bin\).
+function Get-ClaudeMsgSessionsFile {
+    $toolsDir = Split-Path (Get-ClaudeMsgCli) -Parent
+    $d = $toolsDir
+    while ($d -and -not (Split-Path $d -Leaf).StartsWith('.')) {
+        $up = Split-Path $d -Parent
+        if (-not $up -or $up -eq $d) { return (Join-Path $toolsDir "sessions.json") }
+        $d = $up
+    }
+    Join-Path $d "sessions.json"
+}
+
 function Get-ClaudeMsgPeers {
     try {
         node (Get-ClaudeMsgCli) who 2>$null |
@@ -164,7 +182,7 @@ function msg {
             # Which field are we completing: when $word is non-empty it is itself the last element
             $pos = if ($word) { $elems.Count - 1 } else { $elems.Count }
             $cands = if ($pos -le 1) {
-                @('send','recv','join','who','up','ping','whoami') + (Get-ClaudeMsgPeers)
+                @('send','recv','join','register','who','up','ping','whoami') + (Get-ClaudeMsgPeers)
             } elseif ($pos -eq 2 -and $elems[1].Extent.Text -eq 'send') {
                 @('all') + (Get-ClaudeMsgPeers)
             } else { @() }
@@ -184,24 +202,32 @@ function msg {
 # window you typed claude-work into. Windows Terminal tabs share one HWND, so for
 # reliable /stop targeting run each split session in its own window.
 function Register-ClaudeSplitSession {
-    param([string]$MsgName)
+    # FallbackName lands in the profile field, the secondary /stop target. Pass $null
+    # for a session in the real home: "claude" as a fallback would match every one of
+    # them, i.e. it could only ever answer "ambiguous".
+    param([string]$MsgName, $FallbackName = $MsgName)
     if (-not ('ClaudeSplit.Native' -as [type])) {
         Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();' -Name Native -Namespace ClaudeSplit
     }
     $hwnd = [long][ClaudeSplit.Native]::GetForegroundWindow()
-    $file = Join-Path $Global:ClaudeSplitBase "sessions.json"
+    $file = Get-ClaudeMsgSessionsFile
     $sessions = @()
     # PS 5.1: ConvertFrom-Json emits a JSON array as ONE pipeline item; assign to a
     # variable first, then pipe, so it enumerates instead of nesting.
     # Keep only other, still-alive sessions (drops our own stale entry and any
-    # entry whose launcher process is gone — crashes never Unregister).
-    if (Test-Path $file) { try { $parsed = Get-Content $file -Raw | ConvertFrom-Json; $sessions = @($parsed | Where-Object { $_ -and $_.pid -ne $PID -and (Get-Process -Id $_.pid -ErrorAction SilentlyContinue) }) } catch {} }
-    $sessions += [pscustomobject]@{ name = $MsgName; profile = $MsgName; pid = $PID; hwnd = $hwnd; startedAt = (Get-Date -Format o) }
+    # entry whose launcher process is gone — crashes never Unregister). Entries for
+    # this same window go too: one window can only hold one addressable session, and
+    # the broker's own writer dedups by hwnd for the same reason.
+    if (Test-Path $file) { try { $parsed = Get-Content $file -Raw | ConvertFrom-Json; $sessions = @($parsed | Where-Object { $_ -and $_.pid -ne $PID -and $_.hwnd -ne $hwnd -and (Get-Process -Id $_.pid -ErrorAction SilentlyContinue) }) } catch {} }
+    $sessions += [pscustomobject]@{ name = $MsgName; profile = $FallbackName; pid = $PID; hwnd = $hwnd; startedAt = (Get-Date -Format o) }
+    # Normally an existing directory (it is an ancestor of the installed copy), but
+    # create it anyway: a config pointing at a not-yet-installed path must not throw.
+    New-Item -ItemType Directory -Force -Path (Split-Path $file -Parent) | Out-Null
     ConvertTo-Json -InputObject $sessions | Set-Content -Path $file -Encoding UTF8
 }
 
 function Unregister-ClaudeSplitSession {
-    $file = Join-Path $Global:ClaudeSplitBase "sessions.json"
+    $file = Get-ClaudeMsgSessionsFile
     if (-not (Test-Path $file)) { return }
     try {
         $parsed = Get-Content $file -Raw | ConvertFrom-Json
@@ -210,17 +236,32 @@ function Unregister-ClaudeSplitSession {
     } catch {}
 }
 
-# --- Core launcher: fake the home + set the identity + inject paths --
+# --- Core launcher: pick the home + set the identity + inject paths --
+# With -ProfileName it runs claude in that fake home (the isolation launchers).
+# Without, it runs claude in the real home exactly as a bare `claude` would; the only
+# thing it adds is the sessions.json entry that lets /stop and friends find this
+# window, and its removal on the way out. Registering has to happen here, at the
+# shell prompt, because this is the one moment the target window is provably the
+# foreground one — a session cannot work that out about itself later.
 function Invoke-ClaudeWithProfile {
     param(
-        [Parameter(Mandatory=$true)][string]$ProfileName,   # fake home folder name
-        [Parameter(Mandatory=$true)][string]$MsgName,        # message identity: work / personal
+        [string]$ProfileName,   # fake home folder name; omit for the real home
+        [string]$MsgName,       # message identity: work / personal (fake homes only)
         [Parameter(ValueFromRemainingArguments=$true)]$ClaudeArgs
     )
-    $targetPath = Join-Path $Global:ClaudeSplitBase $ProfileName
+    $split = [bool]$ProfileName
+    $targetPath = if ($split) { Join-Path $Global:ClaudeSplitBase $ProfileName } else { $Global:ClaudeSplitRealHome }
     $profileBin = Join-Path $targetPath ".local\bin"
-    New-Item -ItemType Directory -Path $profileBin -Force | Out-Null
-    Register-ClaudeSplitSession -MsgName $MsgName
+    if ($split) { New-Item -ItemType Directory -Path $profileBin -Force | Out-Null }
+
+    # `claude -p` is a one-shot with no window of its own to speak of: registering it
+    # would just add a second entry for a window someone else is sitting in.
+    $register = -not ($ClaudeArgs -contains '-p' -or $ClaudeArgs -contains '--print')
+    # "claude" is a placeholder until msg join renames the entry to the bus name.
+    if ($register) {
+        if ($split) { Register-ClaudeSplitSession -MsgName $MsgName }
+        else        { Register-ClaudeSplitSession -MsgName "claude" -FallbackName $null }
+    }
 
     $oldUserProfile = $env:USERPROFILE
     $oldPath        = $env:PATH
@@ -231,26 +272,35 @@ function Invoke-ClaudeWithProfile {
     $oldSessFile    = $env:CLAUDE_SPLIT_SESSIONS_FILE
     $oldNoUpdate    = $env:DISABLE_AUTOUPDATER
     try {
-        $env:USERPROFILE     = $targetPath
-        $env:PATH            = "$profileBin;$Global:ClaudeSplitBin;$env:PATH"
-        $env:CLAUDE_MSG_NAME = $MsgName
+        if ($split) {
+            $env:USERPROFILE     = $targetPath
+            $env:PATH            = "$profileBin;$Global:ClaudeSplitBin;$env:PATH"
+            $env:CLAUDE_MSG_NAME = $MsgName
+            # The updater derives its install dir from the (faked) home, so an update run inside a split
+            # session installs into the fake home where nothing ever launches it. Update in a normal
+            # shell instead: claude update.
+            $env:DISABLE_AUTOUPDATER = "1"
+        }
         $env:CLAUDE_MSG_PORT = "$Global:ClaudeMsgPort"
         # Full path for the agent's bash, so it never hits the system msg.exe: node "$CLAUDE_MSG" recv
-        $env:CLAUDE_MSG      = (Join-Path $Global:ClaudeSplitBin "msg.js")
-        # msg.js join uses these to rewrite this session's registry entry to the bus
-        # name (the fake USERPROFILE makes the file path underivable from inside).
-        $env:CLAUDE_SPLIT_SESSION_PID   = "$PID"
-        $env:CLAUDE_SPLIT_SESSIONS_FILE = (Join-Path $Global:ClaudeSplitBase "sessions.json")
-        # The updater derives its install dir from the (faked) home, so an update run inside a split
-        # session installs into the fake home where nothing ever launches it. Update in a normal
-        # shell instead: claude update.
-        $env:DISABLE_AUTOUPDATER = "1"
-        Write-Host "--- Claude Instance: [$MsgName] ($targetPath) ---" -ForegroundColor Cyan
+        $env:CLAUDE_MSG      = Get-ClaudeMsgCli
+        # msg join sends this pid so the broker can rename our entry to the bus name.
+        $env:CLAUDE_SPLIT_SESSION_PID   = if ($register) { "$PID" } else { $null }
+        $env:CLAUDE_SPLIT_SESSIONS_FILE = Get-ClaudeMsgSessionsFile
+        Write-Host "--- Claude Instance: [$(if ($split) { $MsgName } else { 'default home' })] ($targetPath) ---" -ForegroundColor Cyan
         # Absolute path, not a bare `claude`: machine PATH (e.g. C:\nvm4w\nodejs) precedes the user's
         # ~\.local\bin, so a bare claude can resolve to a leftover npm shim whose bundled claude.exe
         # is a foreign-platform stub ("not a valid application for this OS platform").
         $native = Join-Path $Global:ClaudeSplitRealHome ".local\bin\claude.exe"
-        if (-not (Test-Path $native)) { Write-Error "native claude.exe not found at $native; run 'irm https://claude.ai/install.ps1 | iex' first"; return }
+        if (-not (Test-Path $native)) {
+            if ($split) { Write-Error "native claude.exe not found at $native; run 'irm https://claude.ai/install.ps1 | iex' first"; return }
+            # Real home: PATH is untouched here, so whatever `claude` normally resolves to
+            # is the right binary. This wrapper must not take the command away from someone
+            # who installed Claude Code another way (npm shim, custom location).
+            # -CommandType Application, or it would resolve back to this function.
+            $native = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+            if (-not $native) { Write-Error "claude not found in $Global:ClaudeSplitRealHome\.local\bin or on PATH; run 'irm https://claude.ai/install.ps1 | iex' first"; return }
+        }
         & $native @ClaudeArgs
     }
     finally {
@@ -262,9 +312,12 @@ function Invoke-ClaudeWithProfile {
         $env:CLAUDE_SPLIT_SESSION_PID   = $oldSessPid
         $env:CLAUDE_SPLIT_SESSIONS_FILE = $oldSessFile
         $env:DISABLE_AUTOUPDATER        = $oldNoUpdate
-        Unregister-ClaudeSplitSession
+        if ($register) { Unregister-ClaudeSplitSession }
     }
 }
 
-function claude-work     { Invoke-ClaudeWithProfile -ProfileName ".claude-work"     -MsgName "work"     @args }
-function claude-personal { Invoke-ClaudeWithProfile -ProfileName ".claude-personal" -MsgName "personal" @args }
+# -ClaudeArgs $args, not @args: splatting lets claude's own flags bind to this
+# function's parameters instead ("claude -p hi" would pass "hi" as -ProfileName).
+function claude          { Invoke-ClaudeWithProfile -ClaudeArgs $args }
+function claude-work     { Invoke-ClaudeWithProfile -ProfileName ".claude-work"     -MsgName "work"     -ClaudeArgs $args }
+function claude-personal { Invoke-ClaudeWithProfile -ProfileName ".claude-personal" -MsgName "personal" -ClaudeArgs $args }

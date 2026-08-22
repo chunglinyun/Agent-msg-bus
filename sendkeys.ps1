@@ -24,9 +24,11 @@ if (-not ('ClaudeSplit.SendKeysNative' -as [type])) {
 }
 
 $target = [IntPtr]$Hwnd
+# Exit code 2 means "that window is gone" and nothing else: broker.js drops the
+# registry entry on it. Every other failure exits 1 and leaves the entry alone.
 if (-not [ClaudeSplit.SendKeysNative]::IsWindow($target)) {
     Write-Error "hwnd $Hwnd is not a window (session closed?)"
-    exit 1
+    exit 2
 }
 
 $prev = [ClaudeSplit.SendKeysNative]::GetForegroundWindow()

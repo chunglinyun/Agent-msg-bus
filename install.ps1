@@ -113,12 +113,16 @@ foreach ($t in $targets) {
     $dest = Join-Path $UserHome $t.tools
     if ($t.kind -eq 'skill') {
         # web.js/web.html are for the human, not the agent, but they ride along so
-        # Start-ClaudeWeb can always find web.js next to broker.js
-        Copy-Tools $dest @('msg-bus-skill\SKILL.md', 'msg.js', 'broker.js', 'web.js', 'web.html')
+        # Start-ClaudeWeb can always find web.js next to broker.js. sendkeys.ps1 rides
+        # along for the same reason: broker.js looks for it in its own directory.
+        Copy-Tools $dest @('msg-bus-skill\SKILL.md', 'msg.js', 'broker.js', 'sendkeys.ps1', 'web.js', 'web.html')
         Write-Host "[$($t.name)] skill -> $dest" -ForegroundColor Green
     }
     else {
-        Copy-Tools $dest @('msg.js', 'broker.js')
+        # sendkeys.ps1 too: $brokerForConfig is the FIRST target installed, so a
+        # codex-only install makes ~\.codex\claude-msg\broker.js the broker, and the
+        # session commands need the script next to whichever copy actually runs.
+        Copy-Tools $dest @('msg.js', 'broker.js', 'sendkeys.ps1')
         $file = Join-Path $UserHome "$($t.home)\$($t.file)"
         if ($DryRun) { Write-Host "  would update $file (claude-msg block)" -ForegroundColor DarkGray }
         else { Set-MsgBusBlock $file (Get-InstructionBody (Join-Path $dest 'msg.js')) }
