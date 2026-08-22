@@ -47,7 +47,27 @@ function request(obj) {
   });
 }
 
-const KNOWN = new Set(['send', 'recv', 'join', 'who', 'up', 'ping', 'whoami']);
+// The window to send keys into, for `register`. GetForegroundWindow() is the only
+// call that returns it: a console program's MainWindowHandle is 0, and under ConPTY
+// GetConsoleWindow() returns a pseudo-console window that exists but cannot be
+// focused. Which is why register is something a human runs, in that window, at a
+// shell prompt — pressing Enter is what makes the right window the foreground one.
+// Anything automatic would silently record whatever the user happened to be looking
+// at, and later fire Esc into it.
+function foregroundWindow() {
+  if (process.platform !== 'win32') return null;
+  const ps = `Add-Type -Namespace P -Name W -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr h, out int pid);'; $h = [P.W]::GetForegroundWindow(); if ($h -eq [IntPtr]::Zero) { exit }; $owner = 0; [void][P.W]::GetWindowThreadProcessId($h, [ref]$owner); "$h $owner"`;
+  try {
+    // windowsHide: no console flash, and no chance of that console being the window
+    // GetForegroundWindow() reports back to us.
+    const out = require('child_process').execFileSync('powershell', ['-NoProfile', '-Command', ps],
+      { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    const [hwnd, pid] = out.trim().split(/\s+/).map(Number);
+    return hwnd && pid ? { hwnd, pid } : null;
+  } catch (_) { return null; } // no PowerShell, or no window: the caller says so out loud
+}
+
+const KNOWN = new Set(['send', 'recv', 'join', 'register', 'who', 'up', 'ping', 'whoami']);
 
 async function main() {
   let [cmd, ...rest] = argv;
@@ -99,22 +119,30 @@ async function main() {
     } else if (cmd === 'join') {
       const name = (rest[0] || '').replace(/^@/, '');
       if (!name) { console.error('usage: msg join <name>'); process.exit(2); }
-      const r = await request({ cmd: 'join', name });
+      // The broker owns the registry (see registerSession there); all we add is the
+      // one thing it cannot see from its own process — the launcher's entry, when a
+      // split launcher started us — so it can rename that entry to the bus name.
+      // Joining never registers a window: see foregroundWindow() above.
+      const r = await request({ cmd: 'join', name, sessionPid: process.env.CLAUDE_SPLIT_SESSION_PID });
       if (!r.ok) { console.error('error:', r.error); process.exit(1); }
-      // Inside a split session, rewrite our registry entry to the bus name so the
-      // broker's /stop and /usage can target it. Best-effort: outside split the env
-      // vars are absent and this is a no-op.
-      const sessPid = process.env.CLAUDE_SPLIT_SESSION_PID, sessFile = process.env.CLAUDE_SPLIT_SESSIONS_FILE;
-      if (sessPid && sessFile) {
-        try {
-          const fs = require('fs');
-          // strip the BOM Set-Content -Encoding UTF8 writes on PS 5.1
-          const sessions = JSON.parse(fs.readFileSync(sessFile, 'utf8').replace(/^﻿/, ''));
-          const s = (Array.isArray(sessions) ? sessions : [sessions]).find((x) => x && String(x.pid) === sessPid);
-          if (s) { s.name = r.name; fs.writeFileSync(sessFile, JSON.stringify(Array.isArray(sessions) ? sessions : [sessions], null, 2)); }
-        } catch (_) { /* registry missing/corrupt — joining still succeeded */ }
-      }
       console.log(`joined as: ${r.name}`);
+
+    } else if (cmd === 'register') {
+      // Run by hand, in the terminal window that should become targetable by /stop
+      // and friends, before starting claude in it. Pure registry bookkeeping: it
+      // claims no name on the bus, the agent still joins as <name> afterwards.
+      const name = (rest[0] || '').replace(/^@/, '');
+      if (!name) { console.error('usage: msg register <name>   (run it in the terminal window you want to target)'); process.exit(2); }
+      const win = foregroundWindow();
+      if (!win) {
+        console.error(process.platform !== 'win32'
+          ? 'cannot register: key injection is Windows-only'
+          : 'cannot register: no foreground window (needs powershell, and a real terminal window — the Claude desktop app has none of its own)');
+        process.exit(1);
+      }
+      const r = await request({ cmd: 'register', name, hwnd: win.hwnd, pid: win.pid });
+      if (!r.ok) { console.error('error:', r.error); process.exit(1); }
+      console.log(`registered "${name}" -> window ${win.hwnd} (start claude here, then have it join as ${name})`);
 
     } else if (cmd === 'who') {
       const r = await request({ cmd: 'who' });
@@ -141,7 +169,7 @@ async function main() {
       console.log(NAME);
 
     } else {
-      console.log('usage: msg send <@peer|@all> <message|--file path> | msg <online member> <message> | msg recv [--wait N] | msg join <name> | msg who | msg up | msg ping | msg whoami (common: --as <name>)');
+      console.log('usage: msg send <@peer|@all> <message|--file path> | msg <online member> <message> | msg recv [--wait N] | msg join <name> | msg register <name> | msg who | msg up | msg ping | msg whoami (common: --as <name>)');
     }
   } catch (e) {
     console.error('failed:', e.message);

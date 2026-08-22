@@ -194,17 +194,61 @@ const CMD_NAMES = Object.keys(COMMANDS).join('|');
 // USERPROFILE may be a fake home when the broker is launched from inside a split
 // session — strip the fake-home suffix to get the real home (same trick as the
 // PS profile), then honor the config file's base when present.
-const REAL_HOME = (process.env.USERPROFILE || process.env.HOME || '').replace(/[\\/]\.claude-split[\\/].*$/, '');
-let SPLIT_BASE = path.join(REAL_HOME, '.claude-split');
-try {
-  const cfg = JSON.parse(fs.readFileSync(path.join(REAL_HOME, '.claude-msgbus.json'), 'utf8').replace(/^﻿/, ''));
-  if (cfg.base) SPLIT_BASE = cfg.base;
-} catch (_) { /* no config yet — the derived default stands */ }
+// The registry belongs to the install that owns this broker, so derive it from where
+// this file sits: the nearest ancestor directory whose name starts with a dot —
+// ~\.claude for a skill install, ~\.codex / ~\.gemini for the other agents,
+// ~\.claude-split for the split launcher (its broker.js lives in bin\). No config
+// lookup, and a skill install stops inventing a .claude-split it never uses.
+function registryDir(dir) {
+  for (let d = dir; ;) {
+    if (path.basename(d).startsWith('.')) return d;
+    const up = path.dirname(d);
+    if (up === d) return dir; // nothing dotted above: keep it next to the broker
+    d = up;
+  }
+}
+const SESSIONS_FILE = path.join(registryDir(__dirname), 'sessions.json');
+
+// --- Session registry writing ------------------------------------------------
+// The registry's only Node writer is here (claude-split.ps1 writes it too, from
+// PowerShell). msg.js used to rewrite its own entry, which meant a second copy of
+// the path derivation above that had to stay in step with this one.
+function writeSessions(list) {
+  fs.writeFileSync(SESSIONS_FILE, JSON.stringify(list, null, 2));
+}
+
+// Best-effort: a failure here must never fail the call itself.
+function registerSession(name, req) {
+  // Started by a split launcher: the entry already exists, it just needs the bus name.
+  if (req.sessionPid) {
+    const list = readSessions();
+    const s = list.find((x) => String(x.pid) === String(req.sessionPid));
+    if (s) { s.name = name; writeSessions(list); }
+    return;
+  }
+  // Otherwise this is `msg register`, typed by hand in the window to be targeted.
+  // The identity of such an entry is the hwnd, never the pid: the process owning a
+  // terminal window is WindowsTerminal.exe, shared by every window it hosts. So
+  // registering the same window again is a rename, another window is a new entry.
+  // No profile field either — for these it could only ever resolve to ambiguous.
+  if (!req.hwnd || !req.pid) return;
+  const list = readSessions().filter((x) => Number(x.hwnd) !== Number(req.hwnd));
+  list.push({ name, pid: req.pid, hwnd: req.hwnd, startedAt: new Date().toISOString() });
+  writeSessions(list);
+}
+
+// Drop the entry for a window that is gone. Re-read rather than reusing the list
+// the caller held: injection is async, and PowerShell writes this file too.
+function forgetSession(hwnd) {
+  const list = readSessions();
+  const kept = list.filter((x) => Number(x.hwnd) !== Number(hwnd));
+  if (kept.length !== list.length) writeSessions(kept);
+}
 
 function readSessions() {
   try {
     // strip the BOM Set-Content -Encoding UTF8 writes on PS 5.1
-    const parsed = JSON.parse(fs.readFileSync(path.join(SPLIT_BASE, 'sessions.json'), 'utf8').replace(/^﻿/, ''));
+    const parsed = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8').replace(/^﻿/, ''));
     return (Array.isArray(parsed) ? parsed : [parsed]).filter(Boolean);
   } catch (_) { return []; /* missing/corrupt file = nobody registered */ }
 }
@@ -224,18 +268,27 @@ function findSession(target) {
 }
 
 // Shared plumbing for the key-injection commands: look up the window in
-// sessions.json (written by the split launcher; msg.js rewrites the entry's name
-// to the bus name on join), spawn sendkeys.ps1 to press keys in it, then call
-// onOk(session) so each command can do its own logging/cleanup.
+// sessions.json (written by the split launcher, or by `msg register`; the bus name
+// lands on the launcher's entry when the agent joins), spawn sendkeys.ps1 to press
+// keys in it, then call onOk(session) so each command can log/clean up its own way.
 function injectKeys(cmd, target, keys, enter, onOk) {
   const { s, ambiguous } = findSession(target);
   if (ambiguous) return log(`/${cmd}: ${ambiguous.length} "${target}" sessions (${ambiguous.map((x) => `${x.name} pid:${x.pid}`).join(', ')}) — have each agent join the bus, then target its bus name`);
-  if (!s) return log(`/${cmd}: no registered session "${target}" — launch it via its split launcher (e.g. claude-work) first`);
+  if (!s) return log(`/${cmd}: no registered session "${target}" — its window is unknown. In a terminal, run "msg register ${target}" in that window (once, before starting claude); split launchers register themselves; sessions inside the Claude desktop app share one window and cannot be targeted.`);
   const helper = path.join(__dirname, 'sendkeys.ps1');
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helper, '-Hwnd', String(s.hwnd), '-Keys', keys];
   if (enter) args.push('-Enter');
-  execFile('powershell', args, (err, _out, serr) => {
-    if (err) return log(`/${cmd} ${target} failed: ${String(serr || err.message).trim()}`);
+  // windowsHide: without it Node lets powershell.exe create its own console, which
+  // flashes on screen for every /stop. The focus flick to the target window stays —
+  // that one is the mechanism, not a side effect.
+  execFile('powershell', args, { windowsHide: true }, (err, _out, serr) => {
+    if (err) {
+      // Exit code 2 means sendkeys.ps1's IsWindow check failed: that window is gone.
+      // Dropping the entry here is the only cleanup dead entries get, and it matters —
+      // Windows recycles HWNDs, and a stale one eventually points at someone else.
+      if (err.code === 2) { forgetSession(s.hwnd); return log(`/${cmd}: "${target}" window is gone — registry entry dropped`); }
+      return log(`/${cmd} ${target} failed: ${String(serr || err.message).trim()}`);
+    }
     onOk(s);
   });
 }
@@ -284,7 +337,20 @@ function handle(req, socket) {
     if (alive(name)) return respond(socket, { ok: false, error: `"${name}" is already taken` });
     touch(name);
     log(`${cname(name)} joined`);
+    try { registerSession(name, req); } catch (_) { /* the registry is a nicety, the join is not */ }
     return respond(socket, { ok: true, name });
+  }
+
+  // `msg register <name>`, run by hand in the window that should be targetable.
+  // Not a join: it records a window, nothing else. The agent still joins the bus
+  // under that name afterwards, which is what makes /stop <name> resolve.
+  if (cmd === 'register') {
+    if (!req.name) return respond(socket, { ok: false, error: 'missing "name"' });
+    if (!req.hwnd || !req.pid) return respond(socket, { ok: false, error: 'missing window' });
+    try { registerSession(req.name, req); }
+    catch (e) { return respond(socket, { ok: false, error: `registry write failed: ${e.message}` }); }
+    log(`${cname(req.name)} registered window ${req.hwnd}`);
+    return respond(socket, { ok: true });
   }
 
   if (cmd === 'who') {
