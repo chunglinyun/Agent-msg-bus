@@ -191,19 +191,22 @@ const COMMANDS = {
 };
 const CMD_NAMES = Object.keys(COMMANDS).join('|');
 
-// USERPROFILE may be a fake home when the broker is launched from inside a split
-// session — strip the fake-home suffix to get the real home (same trick as the
-// PS profile), then honor the config file's base when present.
 // The registry belongs to the install that owns this broker, so derive it from where
 // this file sits: the nearest ancestor directory whose name starts with a dot —
 // ~\.claude for a skill install, ~\.codex / ~\.gemini for the other agents,
 // ~\.claude-split for the split launcher (its broker.js lives in bin\). No config
 // lookup, and a skill install stops inventing a .claude-split it never uses.
 function registryDir(dir) {
-  for (let d = dir; ;) {
+  // Every copy under .claude-split belongs to the split install, fake homes included.
+  // An agent inside a split session starts the broker from its own skill dir
+  // (~\.claude-split\.claude-work\.claude\skills\claude-msg\), and that broker has to
+  // land on the same sessions.json the launcher writes — not on the fake home's own
+  // .claude. So cut anything below .claude-split before walking up.
+  const from = dir.replace(/([\\/]\.claude-split)[\\/].*$/, '$1');
+  for (let d = from; ;) {
     if (path.basename(d).startsWith('.')) return d;
     const up = path.dirname(d);
-    if (up === d) return dir; // nothing dotted above: keep it next to the broker
+    if (up === d) return from; // nothing dotted above: keep it next to the broker
     d = up;
   }
 }

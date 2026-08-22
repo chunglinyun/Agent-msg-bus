@@ -292,7 +292,15 @@ function Invoke-ClaudeWithProfile {
         # ~\.local\bin, so a bare claude can resolve to a leftover npm shim whose bundled claude.exe
         # is a foreign-platform stub ("not a valid application for this OS platform").
         $native = Join-Path $Global:ClaudeSplitRealHome ".local\bin\claude.exe"
-        if (-not (Test-Path $native)) { Write-Error "native claude.exe not found at $native; run 'irm https://claude.ai/install.ps1 | iex' first"; return }
+        if (-not (Test-Path $native)) {
+            if ($split) { Write-Error "native claude.exe not found at $native; run 'irm https://claude.ai/install.ps1 | iex' first"; return }
+            # Real home: PATH is untouched here, so whatever `claude` normally resolves to
+            # is the right binary. This wrapper must not take the command away from someone
+            # who installed Claude Code another way (npm shim, custom location).
+            # -CommandType Application, or it would resolve back to this function.
+            $native = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+            if (-not $native) { Write-Error "claude not found in $Global:ClaudeSplitRealHome\.local\bin or on PATH; run 'irm https://claude.ai/install.ps1 | iex' first"; return }
+        }
         & $native @ClaudeArgs
     }
     finally {
