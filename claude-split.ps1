@@ -71,7 +71,14 @@ function Install-ClaudeSplit {
     Write-Host "Installed to $Global:ClaudeSplitBin" -ForegroundColor Green
 }
 
-# --- Install the msg-bus skill (for everyone: any Claude Code session can join the platform) ---
+# --- Install the whole platform into one Claude Code home ------------
+# This is the install for the ordinary case: a single Claude Code, one account, any
+# number of sessions on the bus. It is NOT a cut-down Install-ClaudeSplit — split
+# exists only for people who need two isolated Claude Code configs (separate
+# accounts/subscriptions), and it calls this function to furnish each fake home.
+# Everything a session needs ships here: the skill, the CLI, the broker, the key
+# injection helper, and the web frontend (Start-ClaudeWeb looks for web.js next to
+# whichever broker.js the config points at, which for this install is the copy below).
 # Usage: Install-MsgBus -SourceDir "C:\tools\claude-msg-bus"   (installs into the real home)
 function Install-MsgBus {
     param(
@@ -82,13 +89,14 @@ function Install-MsgBus {
     if (-not $SourceDir) { Write-Error "no -SourceDir given and none recorded in $Global:ClaudeMsgConfig; run Install-MsgBus -SourceDir <clone dir>"; return }
     $dest = Join-Path $TargetHome ".claude\skills\claude-msg"
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    Copy-Item (Join-Path $SourceDir "msg-bus-skill\SKILL.md") $dest -Force
-    Copy-Item (Join-Path $SourceDir "msg.js")    $dest -Force
-    Copy-Item (Join-Path $SourceDir "broker.js") $dest -Force
-    # broker.js looks for the injection helper in its own directory, and this copy
-    # is the broker for a skill-only install, so it needs one next to it.
-    Copy-Item (Join-Path $SourceDir "sendkeys.ps1") $dest -Force
-    Write-Host "msg-bus skill installed to $dest" -ForegroundColor Green
+    # Same list install.ps1 lays down for Claude Code, and for the same reasons:
+    # broker.js finds sendkeys.ps1 in its own directory, Start-ClaudeWeb finds web.js
+    # next to broker.js. A fake home gets copies it never starts — harmless, and not
+    # worth a second branch.
+    foreach ($f in @("msg-bus-skill\SKILL.md", "msg.js", "broker.js", "sendkeys.ps1", "web.js", "web.html")) {
+        Copy-Item (Join-Path $SourceDir $f) (Join-Path $dest (Split-Path $f -Leaf)) -Force
+    }
+    Write-Host "msg-bus platform installed to $dest" -ForegroundColor Green
     # Only write the config when installing into the real home; the fake-home calls made
     # by split don't count. If split is already installed, don't downgrade it to skill.
     if ($TargetHome -eq $Global:ClaudeSplitRealHome) {

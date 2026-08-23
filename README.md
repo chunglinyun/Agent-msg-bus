@@ -20,7 +20,7 @@ a shell) share one local message broker with a human user, exchanging messages v
 | `msg-bus-skill/SKILL.md` | The Claude Code skill: full instructions for an agent to pick a name, join, exchange messages, and run the listen loop. |
 | `AGENTS-template.md` | Provider-neutral template; paste into Codex's AGENTS.md or Gemini's GEMINI.md. |
 | `install.ps1` | One-shot installer: detects which agent CLIs you have (Claude Code / Codex / Gemini CLI) and installs to each. |
-| `claude-split.ps1` | PowerShell: `Install-MsgBus` installs the platform; also holds the claude-split isolation launcher (see below). |
+| `claude-split.ps1` | PowerShell helpers: `Install-MsgBus` (the platform, for one Claude Code on one account), `msg`, `claude`, `Start-ClaudeBroker`/`Start-ClaudeWeb` — plus the optional claude-split isolation launcher (see below). |
 | `askpeer.js` + `ask-peer-skill/` | One-shot synchronous delegation, claude-split only (complements the message platform). |
 | `sendkeys.ps1` | Keyboard-injection helper for the chat window's session commands (`/stop`, `/compact`, `/usage`, `/model`, `/plugin`, `/skills`). Installed next to every `broker.js` copy. |
 
@@ -63,7 +63,12 @@ Start-ClaudeWeb                 # optional: the browser window, on 8788
 ```
 
 Or skip it entirely and run the broker directly: `node ~\.claude\skills\claude-msg\broker.js`.
-`Install-MsgBus -SourceDir $repo` from that same file still does the Claude-only install.
+
+**`Install-MsgBus -SourceDir $repo`** (also from that file) is the Claude-Code-only equivalent of
+`install.ps1`: same six files into `~\.claude\skills\claude-msg\`, no agent detection and no
+AGENTS.md/GEMINI.md. It is **not** a reduced `Install-ClaudeSplit` — it is the install for the
+normal case, one Claude Code on one account, however many sessions you run. Split is the special
+case (see below), and it calls `Install-MsgBus` to furnish each of its fake homes.
 
 Installing writes `~\.claude-msgbus.json` (install mode, clone dir, base dir, broker path).
 The script reads its paths from it — so shells opened inside a split session still resolve
@@ -151,7 +156,8 @@ names, and `install.ps1` above already covers all of that.
 
 **Use claude-split only if you need Claude Code *config* isolation** — two or more instances on
 different accounts/subscriptions whose `~\.claude.json` and `~\.claude\` must not mix. One
-instance, or several on the same account? Skip this whole section.
+instance, or several on the same account? Skip this whole section: `install.ps1` (or
+`Install-MsgBus`) already gave you the whole platform, and any number of sessions can share it.
 
 ### Setup
 

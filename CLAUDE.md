@@ -71,7 +71,7 @@ The full verification list (TTL reclaim, the three @all scenarios, the end-to-en
 ## Deployment notes
 
 - What runs are **copies**, not this repo, and there are two deployment locations:
-  - `~\.claude\skills\claude-msg\` (the skill: SKILL.md + msg.js + broker.js + sendkeys.ps1) → re-run `Install-MsgBus -SourceDir <path to this repo>`; split's fake homes each hold a copy too (installed by `Install-ClaudeSplit`).
+  - `~\.claude\skills\claude-msg\` (SKILL.md + msg.js + broker.js + sendkeys.ps1 + web.js + web.html) → re-run `Install-MsgBus -SourceDir <path to this repo>`, or `install.ps1`, which lays down the same six files for Claude Code. **`Install-MsgBus` is the install for the ordinary case — one Claude Code, one account, any number of sessions — not a cut-down `Install-ClaudeSplit`**; split is the special case and calls it to furnish each fake home, so those get a copy too.
   - `~\.claude-split\bin\` (broker.js/msg.js/msg.cmd, used by `Start-ClaudeBroker` and the PowerShell `msg` function) → re-run `Install-ClaudeSplit`.
   - Other providers, if `install.ps1` detected them: `~\.codex\claude-msg\` + `~\.codex\AGENTS.md`, `~\.gemini\claude-msg\` + `~\.gemini\GEMINI.md` (the instruction block is delimited by `<!-- claude-msg:begin/end -->` and rewritten in place) → re-run `.\install.ps1`.
 - A change to the broker protocol means also checking: `msg.js`, `msg-bus-skill/SKILL.md`, `AGENTS-template.md`, and the protocol table in the README.
