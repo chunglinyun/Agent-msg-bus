@@ -122,6 +122,22 @@ function Start-ClaudeBroker {
     Start-Process -FilePath "node" -ArgumentList @("`"$broker`"") -WindowStyle Normal
 }
 
+# --- Stop the broker ------------------------------------------------
+# Normally you just close the broker window; this is for when it wedges (or a stray
+# node from an earlier session still holds the port) and there is no window to close.
+# ponytail: SIGKILL by port owner, no graceful shutdown — the broker is memory-only,
+# so nothing is lost; add a protocol-level `msg down` only if a listener ever needs to flush.
+function Stop-ClaudeBroker {
+    param([int]$Port = $Global:ClaudeMsgPort)
+    $owners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty OwningProcess -Unique)
+    if (-not $owners) { Write-Host "no broker listening on port $Port." -ForegroundColor Yellow; return }
+    foreach ($owner in $owners) {
+        Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue
+        Write-Host "stopped broker (pid $owner, port $Port)." -ForegroundColor Green
+    }
+}
+
 # --- Start the web frontend (in its own window; leave it open) -------
 # The page joins the bus as `user`, so it can run alongside a foreground broker:
 # both windows show every message, each one just shows it once.

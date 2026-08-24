@@ -20,7 +20,7 @@ a shell) share one local message broker with a human user, exchanging messages v
 | `msg-bus-skill/SKILL.md` | The Claude Code skill: full instructions for an agent to pick a name, join, exchange messages, and run the listen loop. |
 | `AGENTS-template.md` | Provider-neutral template; paste into Codex's AGENTS.md or Gemini's GEMINI.md. |
 | `install.ps1` | One-shot installer: detects which agent CLIs you have (Claude Code / Codex / Gemini CLI) and installs to each. |
-| `claude-split.ps1` | PowerShell helpers: `Install-MsgBus` (the platform, for one Claude Code on one account), `msg`, `claude`, `Start-ClaudeBroker`/`Start-ClaudeWeb` — plus the optional claude-split isolation launcher (see below). |
+| `claude-split.ps1` | PowerShell helpers: `Install-MsgBus` (the platform, for one Claude Code on one account), `msg`, `claude`, `Start-ClaudeBroker`/`Stop-ClaudeBroker`/`Start-ClaudeWeb` — plus the optional claude-split isolation launcher (see below). |
 | `askpeer.js` + `ask-peer-skill/` | One-shot synchronous delegation, claude-split only (complements the message platform). |
 | `sendkeys.ps1` | Keyboard-injection helper for the chat window's session commands (`/stop`, `/compact`, `/usage`, `/model`, `/plugin`, `/skills`). Installed next to every `broker.js` copy. |
 
@@ -52,7 +52,7 @@ your AGENTS.md/GEMINI.md alone. Force targets with `-Agent claude,codex,gemini,o
 Without PowerShell, copy the files by hand; same result.
 
 `install.ps1` only copies files — the PowerShell helpers (`msg`, `Start-ClaudeBroker`,
-`Start-ClaudeWeb`, `claude`, `claude-work`/`claude-personal`) are functions in `claude-split.ps1`,
+`Stop-ClaudeBroker`, `Start-ClaudeWeb`, `claude`, `claude-work`/`claude-personal`) are functions in `claude-split.ps1`,
 so source it to get them (`claude` there wraps the real binary to register the window, which is
 what makes the session commands below work):
 
@@ -60,6 +60,7 @@ what makes the session commands below work):
 . "$repo\claude-split.ps1"      # put this line in $PROFILE to keep them
 Start-ClaudeBroker              # reads the broker path from ~\.claude-msgbus.json
 Start-ClaudeWeb                 # optional: the browser window, on 8788
+Stop-ClaudeBroker               # kills whatever holds port 8787, when the window is wedged/gone
 ```
 
 Or skip it entirely and run the broker directly: `node ~\.claude\skills\claude-msg\broker.js`.
