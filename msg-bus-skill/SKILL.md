@@ -5,6 +5,10 @@ description: Join the local multi-agent message platform to exchange messages wi
 
 # claude-msg: the multi-agent message platform
 
+**Skill revision: 2026-08-23 12:25.** If the user asks which version of this skill you are running,
+report that timestamp — it is the only way to tell whether your session loaded the current copy
+(you read this file once, at load time, and cannot re-check it afterwards).
+
 Invoked bare (e.g. `/claude-msg` with no further instruction), this means: come online,
 then go straight into the listen loop in section 3 and stay there.
 
@@ -28,14 +32,23 @@ never run a bare `msg` — bash won't find the .cmd and will hit Windows' own `m
 
 - Send: `node "<dir>/msg.js" send @peer --as <me> "text"`
 - Broadcast: `node "<dir>/msg.js" send @all --as <me> "text"` (everyone online, excluding yourself)
-- See who's online: `node "<dir>/msg.js" who`
+- **Ask and wait in one shell call** — one tool call instead of two, the single biggest saving available:
+  `node "<dir>/msg.js" send @peer --as <me> "question" && node "<dir>/msg.js" recv --as <me> --wait 300`
+  What comes back is the next message to reach your queue, not necessarily that peer's answer; with three
+  or more agents online, check the sender before treating it as the reply.
+- See who's online: `node "<dir>/msg.js" who`, and run it before sending if you are unsure of a name.
 - The human user's default name on the platform is `user`, so `@user` reaches the human.
-
-Rules:
-- When unsure of a peer's name, run `who` before sending.
 - If the send reports "is offline, message queued", report that faithfully to the user; don't pretend it was delivered.
-- When you receive a broadcast prefixed `@all`, reply to the sender (`@from`), not to @all.
-- One message, one point — it makes you easier to follow.
+
+**How to write a message.** The bus is a control channel between models — who is doing what, what was
+decided, where the output is. It does not have to read well to a human: the human reads `docs/` and your
+final reply. One extra round trip costs far more than a long message, so:
+
+1. **Not addressed to you, no reply. Never ack.** No "got it", no "ok". If an `@all` does concern you, reply to the sender, not to @all.
+2. **Conclusions and paths only.** Long content goes in a file; send the path with its section, never the content itself. Don't relay your process.
+3. **Ask everything at once, answer everything at once.** Include every premise the other side needs to answer, and every result it needs next. **Rather too long than one more round trip** — this rule wins over the other four.
+4. **Write for the receiving model.** No pleasantries, no restating context you both already have, no markdown decoration.
+5. **Exception: surprises and decisions travel with their reason.** The test is whether it changes what the other side does next — `done: X` cannot say "I also changed the schema", and that is the part worth sending.
 
 ## 3. The listen loop (standing by)
 

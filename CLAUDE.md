@@ -27,7 +27,7 @@ Therefore:
 
 ## What this is
 
-A local multi-agent message platform: any number of agent sessions (Claude Code, Codex, Gemini CLI…) share one broker with the human user, exchanging messages via `@name` / `@all`. It also ships the optional claude-split isolation launcher. Pure Node stdlib + PowerShell, **zero dependencies, no package.json, no build, no test framework**. Docs and comments are written in English.
+A local multi-agent message platform: any number of agent sessions (Claude Code, Codex, Gemini CLI…) share one broker with the human user, exchanging messages via `@name` / `@all`. It also ships the optional claude-split isolation launcher. Pure Node stdlib + PowerShell, **zero dependencies, no package.json, no build, no test framework** (one plain-assert smoke check, `web-smoke.js`). Docs and comments are written in English.
 
 ## Architecture
 
@@ -44,6 +44,7 @@ Supporting pieces:
 
 - `msg-bus-skill/SKILL.md`: the Claude Code skill. Tells the agent how to pick a name (project + task, two words), join, follow the messaging rules, and run the listen loop (`recv --wait 540`, Bash timeout 600000, stop after two empty returns).
 - `AGENTS-template.md`: the provider-neutral instruction template (paste into AGENTS.md / GEMINI.md).
+- `web.js` + `web.html` (`Start-ClaudeWeb`, `127.0.0.1:8788`): the browser frontend, a *third* kind of client. It joins the bus as `user` itself — two long-lived broker connections belong to the process, not to a tab: one `recv` loop (the only keepalive for `user` outside chat mode) and one `tap` per open page. `tap` carries **every** message on the bus including A → B traffic that never enters `user`'s queue, and the broker replays a 200-entry ring buffer (`broker.js:81`) so a fresh tab is not blank. Because the page is the only network surface the platform adds, every POST goes through the same four checks in `guard` — and `/command` injects keystrokes into a real terminal window, so don't loosen them.
 - `askpeer.js` + `ask-peer-skill/`: split-only synchronous delegation — a one-shot `claude -p` under the peer's fake home (stateless). Use askpeer for a single question and answer, the message platform for multi-turn work.
 - **Session commands** (`/stop`, `/compact`, `/usage`, `/model`, `/plugin`, `/skills`) are zero-token keystroke injection, and the chain spans four files: `claude-split.ps1` writes `sessions.json` (one entry per launcher process: name, profile, pid, hwnd) into the home of the install that owns the broker — `~\.claude` for a skill install, `~\.codex` / `~\.gemini` for those agents, `~\.claude-split` for split; both writers derive it the same way, as the nearest ancestor of the installed copy whose name starts with a dot → `msg join` sends `CLAUDE_SPLIT_SESSION_PID` and the **broker** rewrites that entry's `name` to the agent's bus name (the broker owns the file; the fake `USERPROFILE` makes the path underivable from inside a split session) → the broker's chat mode matches `/<cmd> <target>`, looks the target up by name then profile (>1 hit = ambiguous, refuse) → `sendkeys.ps1` focuses that HWND, sends the keys, restores focus (exit code 2 = that window is gone, and the broker drops the entry). Windows Terminal tabs share one HWND, so targeting is only reliable with one session per window.
   - The window handle can only be captured at a shell prompt (`GetForegroundWindow()`; a console program's `MainWindowHandle` is 0 and ConPTY's `GetConsoleWindow()` cannot be focused), never from inside a running session. Hence two entry points and no third: the launcher functions (`claude`, `claude-work`, `claude-personal` — `claude` is the plain one, real home, register on start + unregister on exit) and the manual `msg register <name>` fallback. Sessions in the Claude desktop app cannot be targeted at all.
@@ -51,7 +52,10 @@ Supporting pieces:
 
 ## Development and testing
 
-There are no build/lint/test commands. Manual verification:
+No build or lint step. The one automated check is `node web-smoke.js` — it starts a throwaway broker
+plus `web.js` on spare ports (8797/8798), asserts the tap feed and the frontend's POST guards still
+behave, and leaves a live session untouched. Run it after touching `broker.js`'s tap/history, `web.js`,
+or `web.html`. Everything else is manual:
 
 ```powershell
 # Start the broker (foreground, so you can watch the log)
@@ -70,8 +74,9 @@ The full verification list (TTL reclaim, the three @all scenarios, the end-to-en
 
 ## Deployment notes
 
-- What runs are **copies**, not this repo, and there are two deployment locations:
+- What runs are **copies**, not this repo, and there are three deployment locations:
   - `~\.claude\skills\claude-msg\` (SKILL.md + msg.js + broker.js + sendkeys.ps1 + web.js + web.html) → re-run `Install-MsgBus -SourceDir <path to this repo>`, or `install.ps1`, which lays down the same six files for Claude Code. **`Install-MsgBus` is the install for the ordinary case — one Claude Code, one account, any number of sessions — not a cut-down `Install-ClaudeSplit`**; split is the special case and calls it to furnish each fake home, so those get a copy too.
   - `~\.claude-split\bin\` (broker.js/msg.js/msg.cmd, used by `Start-ClaudeBroker` and the PowerShell `msg` function) → re-run `Install-ClaudeSplit`.
   - Other providers, if `install.ps1` detected them: `~\.codex\claude-msg\` + `~\.codex\AGENTS.md`, `~\.gemini\claude-msg\` + `~\.gemini\GEMINI.md` (the instruction block is delimited by `<!-- claude-msg:begin/end -->` and rewritten in place) → re-run `.\install.ps1`.
+- **Every edit to `msg-bus-skill/SKILL.md` must also bump the `Skill revision:` timestamp on its third line** (`YYYY-MM-DD HH:MM`, local time — get it with `date "+%Y-%m-%d %H:%M"`; a date alone cannot separate two edits made the same day), and be followed by a re-install so the deployed copy matches. The timestamp is not decoration: a session that is already running holds the skill text in its context and can never re-read the file, so comparing files on disk cannot tell you whether a live agent has the new rules — asking it for that timestamp is the only check. Files on disk need no version string; `Copy-Item` preserves LastWriteTime, so hash or mtime against this repo answers that question without anything to bump.
 - A change to the broker protocol means also checking: `msg.js`, `msg-bus-skill/SKILL.md`, `AGENTS-template.md`, and the protocol table in the README.
