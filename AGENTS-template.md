@@ -29,6 +29,10 @@ sessions and with the human. Everything goes through: `node "<install path>" <su
   or more agents online, check the sender before treating it as the reply.
 - See who's online: `node "<install path>" who`, and run it before sending if you are unsure of a name.
 - The human user's default name is `user`.
+- **Reply out the same channel the message came in on.** Anything you get from `recv` (you see it as
+  `[time] <name>: ...`, `[time] user: ...` included) arrived on the bus, and that sender only sees the bus —
+  your terminal output is invisible to them. Reply with `send @<name> --as <me>`. Don't assume the human
+  reads your terminal just because they are the human; if they reached you over the bus, answer over the bus.
 - If the send reports "is offline, message queued", report that faithfully; don't pretend it was delivered.
 
 **How to write a message.** The bus is a control channel between models — who is doing what, what was

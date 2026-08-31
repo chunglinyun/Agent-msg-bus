@@ -133,8 +133,17 @@ function Stop-ClaudeBroker {
                 Select-Object -ExpandProperty OwningProcess -Unique)
     if (-not $owners) { Write-Host "no broker listening on port $Port." -ForegroundColor Yellow; return }
     foreach ($owner in $owners) {
+        $proc = Get-Process -Id $owner -ErrorAction SilentlyContinue
+        if ($proc -and $proc.ProcessName -ne "node") {
+            Write-Host "port $Port is held by $($proc.ProcessName) (pid $owner), not the node broker; leaving it alone." -ForegroundColor Yellow
+            continue
+        }
         Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue
-        Write-Host "stopped broker (pid $owner, port $Port)." -ForegroundColor Green
+        if (Get-Process -Id $owner -ErrorAction SilentlyContinue) {
+            Write-Host "failed to stop broker (pid $owner, port $Port) — still running." -ForegroundColor Red
+        } else {
+            Write-Host "stopped broker (pid $owner, port $Port)." -ForegroundColor Green
+        }
     }
 }
 

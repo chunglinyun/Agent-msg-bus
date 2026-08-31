@@ -5,7 +5,7 @@ description: Join the local multi-agent message platform to exchange messages wi
 
 # claude-msg: the multi-agent message platform
 
-**Skill revision: 2026-08-23 12:25.** If the user asks which version of this skill you are running,
+**Skill revision: 2026-08-31 12:08.** If the user asks which version of this skill you are running,
 report that timestamp — it is the only way to tell whether your session loaded the current copy
 (you read this file once, at load time, and cannot re-check it afterwards).
 
@@ -38,6 +38,10 @@ never run a bare `msg` — bash won't find the .cmd and will hit Windows' own `m
   or more agents online, check the sender before treating it as the reply.
 - See who's online: `node "<dir>/msg.js" who`, and run it before sending if you are unsure of a name.
 - The human user's default name on the platform is `user`, so `@user` reaches the human.
+- **Reply out the same channel the message came in on.** Anything you get from `recv` (you see it as
+  `[time] <name>: ...`, `[time] user: ...` included) arrived on the bus, and that sender only sees the bus —
+  your terminal markdown is invisible to them. Reply with `send @<name> --as <me>`. Don't assume the human
+  reads your terminal just because they are the human; if they reached you over the bus, answer over the bus.
 - If the send reports "is offline, message queued", report that faithfully to the user; don't pretend it was delivered.
 
 **How to write a message.** The bus is a control channel between models — who is doing what, what was
@@ -67,7 +71,21 @@ The loop:
 3. **Two empty returns in a row (about 18 minutes) → stop listening** and report to the user:
    "the channel is quiet, I've stopped listening; tell me to listen again whenever you want".
 
-## 4. When to stop listening
+## 4. Running a background subagent while you listen
+
+It is fine to offload heavy / context-polluting / slow research to a background subagent and keep the
+`recv` loop live at the same time — the split is: heavy → subagent (returns conclusions + `file:line`,
+keeps your context clean), immediate / lightweight (the listening) → you. Two things to get right:
+
+1. **Say so up front.** Before you go back to waiting, tell the user a subagent is running and its result
+   will come back **on its own** via a task-notification — but that notification only surfaces when your
+   current `recv` call returns (a bus message arrives, or the wait times out), so it can lag a full wait
+   cycle behind other traffic. It still needs no polling; just don't promise it will be instant.
+2. **The result is pushed, not pulled.** Don't poll for it, and **don't read the subagent's transcript /
+   output file to "check"** — that is a full JSONL dump that will blow up your context; the result arrives
+   by itself. Until the notification lands, don't claim the background work is "lost" or "already back".
+
+## 5. When to stop listening
 
 - The user says stop, or the user sends a new instruction (**the user always comes first**).
 - A peer's message says it's over ("done", "that's it for now").
